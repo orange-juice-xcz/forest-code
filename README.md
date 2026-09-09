@@ -99,6 +99,22 @@ powershell -File build.ps1 -Run
 
 产物：`build\forest-code.exe`（约 2.3 MB，静态链接，可单独拷走）。
 
+### 桌面快捷方式
+
+```powershell
+powershell -File tools\install_shortcut.ps1
+```
+
+会在桌面创建带图标的 `Forest Code` 快捷方式（图标已嵌进 exe，任务栏 / Alt+Tab 同样生效）。
+
+### 图标
+
+`res\forestcode.ico` 由 `tools\make_icon.ps1` 用 GDI+ 程序化生成（16~256 共 9 个尺寸）：
+
+```powershell
+powershell -File tools\make_icon.ps1 -Preview   # 顺便输出尺寸预览图
+```
+
 ---
 
 ## 代码结构（改哪里）
