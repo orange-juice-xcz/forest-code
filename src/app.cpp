@@ -518,7 +518,9 @@ void App::RebuildButtons() {
             b.rc = { rcTool_.right - pad - tw, by, rcTool_.right - pad, by + bh };
         }
         if (b.id == 7) {
-            b.rc = { rcTool_.right - pad - g_theme.S(38), by, rcTool_.right - pad - g_theme.S(6), by + bh };
+            // 放在「设置」左边，不能重叠
+            int right = rcTool_.right - pad - g_theme.S(132) - g_theme.S(8);
+            b.rc = { right - g_theme.S(34), by, right, by + bh };
         }
     }
 

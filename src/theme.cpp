@@ -172,7 +172,8 @@ int TextWidth(HDC dc, const std::wstring &s, HFONT font) {
 
 void DrawIconC(HDC dc, unsigned int glyphCode, RECT r, COLORREF col, HFONT font, UINT align) {
     wchar_t buf[2] = { (wchar_t)glyphCode, 0 };
-    DrawTextC(dc, buf, r, col, font ? font : g_theme.Icon(), align | DT_NOPREFIX);
+    // 注意：DT_VCENTER 只有配合 DT_SINGLELINE 才生效，漏了就会变成顶对齐
+    DrawTextC(dc, buf, r, col, font ? font : g_theme.Icon(), align | DT_NOPREFIX | DT_SINGLELINE);
 }
 
 void FillParentBg(HDC dc, HWND hwnd, const RECT &r, COLORREF col) {
