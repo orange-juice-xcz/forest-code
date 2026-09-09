@@ -982,11 +982,24 @@ void App::OnMouseLeave() {
 }
 
 void App::OnLButtonDown(POINT p) {
+    // 底部标签必须最先处理：它们也在 buttons 里，否则会被下面的通用按钮逻辑吃掉
+    for (auto &b : buttons) {
+        if (b.id >= 910 && b.id <= 912 && b.visible && Hit(b.rc, p)) {
+            SaveEditorsToTest();
+            bottomPage = (BottomPage)(b.id - 910);
+            bottomVisible = true;
+            UpdateTestEditorsVisibility();
+            if (bottomPage == BottomPage::Tests) LoadTestToEditors(selTest);
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return;
+        }
+    }
+
     // 窗口按钮
     for (auto &b : buttons) {
         if (!b.visible) continue;
         if (Hit(b.rc, p)) {
-            if (b.id >= 900) {
+            if (b.id >= 901 && b.id <= 903) {   // 只匹配标题栏的三个窗口按钮
                 if (b.id == 901) ShowWindow(hwnd_, SW_MINIMIZE);
                 else if (b.id == 902) ShowWindow(hwnd_, IsZoomed(hwnd_) ? SW_RESTORE : SW_MAXIMIZE);
                 else if (b.id == 903) PostMessageW(hwnd_, WM_CLOSE, 0, 0);
@@ -1020,17 +1033,6 @@ void App::OnLButtonDown(POINT p) {
         return;
     }
 
-    // 底部标签
-    for (auto &b : buttons) {
-        if (b.id >= 910 && b.id <= 912 && Hit(b.rc, p)) {
-            SaveEditorsToTest();
-            bottomPage = (BottomPage)(b.id - 910);
-            UpdateTestEditorsVisibility();
-            if (bottomPage == BottomPage::Tests) LoadTestToEditors(selTest);
-            InvalidateRect(hwnd_, nullptr, FALSE);
-            return;
-        }
-    }
 
     // 测试列表
     if (bottomVisible && bottomPage == BottomPage::Tests && Hit(rcTestList_, p)) {

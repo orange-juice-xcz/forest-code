@@ -72,7 +72,7 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             bool onButton = false;
             for (auto &btn : app.buttons) {
                 if (!btn.visible) continue;
-                if (btn.id >= 900) {
+                if (btn.id >= 901 && btn.id <= 903) {
                     RECT r = btn.rc;
                     if (cp.x >= r.left && cp.x < r.right && cp.y >= r.top && cp.y < r.bottom) { onButton = true; break; }
                 }
