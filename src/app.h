@@ -186,6 +186,7 @@ public:
     void UpdateTestEditorsVisibility();
 
     // 输入
+    int  TabIndexAt(POINT p, bool *onClose);   // 标签命中检测（绘制与点击共用同一几何）
     void OnMouseMove(POINT p);
     void OnLButtonDown(POINT p);
     void OnLButtonUp(POINT p);

@@ -879,6 +879,30 @@ static bool Hit(const RECT &r, POINT p) {
     return p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom;
 }
 
+// 标签几何只在这里算一次：绘制、悬停、点击全部共用，避免三处不一致
+int App::TabIndexAt(POINT p, bool *onClose) {
+    if (onClose) *onClose = false;
+    if (!Hit(rcTab_, p)) return -1;
+    HDC dc = GetDC(hwnd_);
+    SelectObject(dc, g_theme.Ui());
+    int x = rcTab_.left + g_theme.S(6);
+    int result = -1;
+    for (size_t i = 0; i < docs.size(); ++i) {
+        int tw = TextWidth(dc, docs[i]->title, g_theme.Ui()) + g_theme.S(64);
+        if (tw > g_theme.S(240)) tw = g_theme.S(240);
+        RECT r{ x, rcTab_.top + g_theme.S(5), x + tw, rcTab_.bottom };
+        if (Hit(r, p)) {
+            result = (int)i;
+            RECT cr{ r.right - g_theme.S(34), rcTab_.top, r.right, rcTab_.bottom };
+            if (onClose && Hit(cr, p)) *onClose = true;
+            break;
+        }
+        x += tw + g_theme.S(4);
+    }
+    ReleaseDC(hwnd_, dc);
+    return result;
+}
+
 void App::OnMouseMove(POINT p) {
     // 拖动分隔条
     if (resizing_) {
@@ -901,24 +925,9 @@ void App::OnMouseMove(POINT p) {
         if (Hit(b.rc, p)) { hotBtn = b.id; break; }
     }
 
-    int hotTab = -1, hotClose = -1;
-    if (Hit(rcTab_, p)) {
-        int x = rcTab_.left + g_theme.S(6);
-        HDC dc = GetDC(hwnd_);
-        SelectObject(dc, g_theme.Ui());
-        for (size_t i = 0; i < docs.size(); ++i) {
-            int tw = TextWidth(dc, docs[i]->title, g_theme.Ui()) + g_theme.S(46);
-            if (tw > g_theme.S(210)) tw = g_theme.S(210);
-            RECT r{ x, rcTab_.top + g_theme.S(5), x + tw, rcTab_.bottom };
-            if (Hit(r, p)) {
-                hotTab = (int)i;
-                RECT cr{ r.right - g_theme.S(22), r.top, r.right - g_theme.S(6), r.bottom };
-                if (Hit(cr, p)) hotClose = (int)i;
-            }
-            x += tw + g_theme.S(4);
-        }
-        ReleaseDC(hwnd_, dc);
-    }
+    bool onCloseHit = false;
+    int hotTab = TabIndexAt(p, &onCloseHit);
+    int hotClose = onCloseHit ? hotTab : -1;
 
     int hotSide = -1;
     if (sideVisible && Hit(rcSide_, p) && p.y > rcSideHead_.bottom) {
@@ -1000,10 +1009,14 @@ void App::OnLButtonDown(POINT p) {
         return;
     }
 
-    // 标签页
+    // 标签页：自己算命中，不依赖悬停状态（TME_LEAVE 会随时把它清掉）
     if (Hit(rcTab_, p)) {
-        if (hotDocClose >= 0) { CloseDoc(hotDocClose); return; }
-        if (hotDocTab >= 0) { ActivateDoc(hotDocTab); return; }
+        bool onCloseHit = false;
+        int tabIdx = TabIndexAt(p, &onCloseHit);
+        if (tabIdx >= 0) {
+            if (onCloseHit) CloseDoc(tabIdx);
+            else ActivateDoc(tabIdx);
+        }
         return;
     }
 

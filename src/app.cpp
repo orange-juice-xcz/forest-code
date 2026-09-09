@@ -352,12 +352,12 @@ bool App::Init(HINSTANCE inst) {
 }
 
 int App::Run() {
+    // 不要用 IsDialogMessageW：它会把 WM_MOUSEMOVE 吞掉，导致悬停状态（标签关闭按钮、
+    // 侧栏行、测试用例行）永远拿不到，表现为"点不到"。本程序不需要对话框式 Tab 导航。
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
-        if (!IsDialogMessageW(hwnd_, &msg)) {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
     }
     GfxShutdown();
     return (int)msg.wParam;
@@ -499,7 +499,7 @@ void App::RebuildButtons() {
     SelectObject(dc, g_theme.Ui());
     for (auto &b : buttons) {
         if (b.id < 1 || b.id > 8) continue;
-        int tw = b.iconOnly ? bh : TextWidth(dc, b.text, g_theme.Ui()) + g_theme.S(38);
+        int tw = b.iconOnly ? bh : TextWidth(dc, b.text, g_theme.Ui()) + g_theme.S(56);
         if (b.text.empty()) tw = bh;
         b.rc = { x, by, x + tw, by + bh };
         x += tw + g_theme.S(6);
@@ -513,7 +513,7 @@ void App::RebuildButtons() {
         if (b.id == 6) {
             HDC dc2 = GetDC(hwnd_);
             SelectObject(dc2, g_theme.Ui());
-            int tw = TextWidth(dc2, b.text, g_theme.Ui()) + g_theme.S(38);
+            int tw = TextWidth(dc2, b.text, g_theme.Ui()) + g_theme.S(56);
             ReleaseDC(hwnd_, dc2);
             b.rc = { rcTool_.right - pad - tw, by, rcTool_.right - pad, by + bh };
         }
@@ -538,15 +538,18 @@ void App::RebuildButtons() {
     // 底部标签
     {
         int xx = rcBottom_.left + g_theme.S(8);
-        int tw = g_theme.S(84);
         int yy = rcBottomTabs_.top;
         int hh = rcBottomTabs_.bottom - rcBottomTabs_.top;
+        HDC dc3 = GetDC(hwnd_);
+        SelectObject(dc3, g_theme.UiBold());
         for (auto &b : buttons) {
             if (b.id >= 910 && b.id <= 912) {
+                int tw = TextWidth(dc3, b.text, g_theme.UiBold()) + g_theme.S(34);
                 b.rc = { xx, yy, xx + tw, yy + hh };
                 xx += tw + g_theme.S(2);
             }
         }
+        ReleaseDC(hwnd_, dc3);
     }
 }
 
@@ -762,6 +765,22 @@ void App::PaintSidebar(HDC dc) {
     DeleteObject(clip);
 }
 
+// 手绘关闭叉：图标字体 E8BB 的字形在 em 盒里偏高，用 DT_VCENTER 居中会视觉上浮
+static void DrawCloseX(HDC dc, const RECT &r, COLORREF col, int thick) {
+    int cx = (r.left + r.right) / 2;
+    int cy = (r.top + r.bottom) / 2;
+    int s = g_theme.S(4);
+    if (s < 2) s = 2;
+    HPEN pen = CreatePen(PS_SOLID, thick < 1 ? 1 : thick, col);
+    HGDIOBJ old = SelectObject(dc, pen);
+    MoveToEx(dc, cx - s, cy - s, nullptr);
+    LineTo(dc, cx + s + 1, cy + s + 1);
+    MoveToEx(dc, cx + s, cy - s, nullptr);
+    LineTo(dc, cx - s - 1, cy + s + 1);
+    SelectObject(dc, old);
+    DeleteObject(pen);
+}
+
 void App::PaintTabs(HDC dc) {
     const Palette &c = g_theme.c;
     FillRectC(dc, rcTab_, c.bgPanel);
@@ -796,11 +815,11 @@ void App::PaintTabs(HDC dc) {
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
 
         // 关闭按钮 / 修改标记
-        RECT cr{ r.right - g_theme.S(22), r.top, r.right - g_theme.S(6), r.bottom };
+        RECT cr{ r.right - g_theme.S(24), r.top, r.right - g_theme.S(6), r.bottom };
         if ((int)i == hotDocClose) {
             FillRound(dc, RECT{ cr.left, r.top + g_theme.S(6), cr.right, r.bottom - g_theme.S(6) },
                       g_theme.S(4), c.bgActive);
-            DrawIconC(dc, glyph::Close, cr, c.text, g_theme.IconSmall());
+            DrawCloseX(dc, cr, c.text, g_theme.S(1));
         } else if (modified) {
             int cx = (cr.left + cr.right) / 2, cy = (cr.top + cr.bottom) / 2;
             int rr = g_theme.S(3);
@@ -811,7 +830,7 @@ void App::PaintTabs(HDC dc) {
             SelectObject(dc, op); SelectObject(dc, ob);
             DeleteObject(br);
         } else if (act) {
-            DrawIconC(dc, glyph::Close, cr, c.textFaint, g_theme.IconSmall());
+            DrawCloseX(dc, cr, c.textFaint, g_theme.S(1));
         }
 
         x += tw + g_theme.S(4);
