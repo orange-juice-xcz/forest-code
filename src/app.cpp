@@ -258,8 +258,10 @@ bool App::Init(HINSTANCE inst) {
     wc.hInstance = inst;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.lpszClassName = L"ForestCodeMain";
-    wc.hIcon = (HICON)LoadImageW(inst, L"APPICON", IMAGE_ICON, 0, 0, LR_DEFAULTSIZE | LR_SHARED);
-    wc.hIconSm = wc.hIcon;
+    wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(1));
+    wc.hIconSm = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(1), IMAGE_ICON,
+                                   GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON),
+                                   LR_DEFAULTCOLOR);
     if (!RegisterClassExW(&wc)) return false;
 
     hwnd_ = CreateWindowExW(WS_EX_APPWINDOW | WS_EX_ACCEPTFILES, L"ForestCodeMain", L"Forest Code",

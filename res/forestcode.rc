@@ -1,5 +1,7 @@
 #include <windows.h>
 
+1 ICON "forestcode.ico"
+
 1 24 "forestcode.manifest"
 
 VS_VERSION_INFO VERSIONINFO
