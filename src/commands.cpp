@@ -783,6 +783,12 @@ void App::OnKeyDown(WPARAM key) {
     case VK_F11: CmdCompileRun(); break;
     case VK_F6:  CmdRunAllTests(); break;
     case VK_F1:  CmdAbout(); break;
+    case VK_F2:
+        if (selFsRow >= 0) BeginInlineRename(selFsRow);
+        break;
+    case VK_DELETE:
+        if (selFsRow >= 0 && selFsRow < (int)fsRows.size()) CmdDeletePath(fsRows[selFsRow].path);
+        break;
     case 'S': if (ctrl && shift) CmdSaveAll(); else if (ctrl) SaveActive(); break;
     case 'N': if (ctrl) CmdNewProblem(); break;
     case 'B': if (ctrl) CmdTogglePanel(); break;

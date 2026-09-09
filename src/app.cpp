@@ -139,7 +139,10 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         POINT p{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         if (p.y < g_theme.TitleH()) {
             ShowWindow(hwnd, IsZoomed(hwnd) ? SW_RESTORE : SW_MAXIMIZE);
+            return 0;
         }
+        int row = app.FsRowAt(p);          // 双击文件名 -> 就地重命名
+        if (row >= 0) { app.selFsRow = row; app.BeginInlineRename(row); }
         return 0;
     }
     case WM_MOUSEWHEEL: {
