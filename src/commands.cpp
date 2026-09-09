@@ -255,7 +255,7 @@ void App::RefreshDiagnostics() {
     } else {
         text = lastCompileLog;
     }
-    SetWindowTextW(hDiag, U2W(text).c_str());
+    SetWindowTextW(hDiag, ToEdit(text).c_str());
     // 在编辑器上标出错误行
     if (Doc *d = Active()) {
         d->ed->ClearMarkers();
@@ -279,12 +279,12 @@ void App::RefreshRunPanel() {
                 t = lastOutput;
             }
         } else t = lastOutput;
-        SetWindowTextW(hAct, U2W(t).c_str());
+        SetWindowTextW(hAct, ToEdit(t).c_str());
     }
     if (hOut) {
         std::string t = lastOutput;
         if (lastOutput.empty() && lastCompileLog.empty()) t = "还没有运行记录。按 F11 编译并运行。\n";
-        SetWindowTextW(hOut, U2W(t).c_str());
+        SetWindowTextW(hOut, ToEdit(t).c_str());
     }
     InvalidateRect(hwnd_, &rcTestList_, FALSE);
 }
@@ -456,9 +456,9 @@ void App::LoadTestToEditors(int index) {
     TestCase &tc = p->tests[index];
     ReadFileUtf8(tc.inPath, tc.inText);
     if (tc.hasExpected) ReadFileUtf8(tc.outPath, tc.outText);
-    SetWindowTextW(hIn, U2W(tc.inText).c_str());
-    SetWindowTextW(hExp, U2W(tc.outText).c_str());
-    SetWindowTextW(hAct, U2W(tc.actual).c_str());
+    SetWindowTextW(hIn, ToEdit(tc.inText).c_str());
+    SetWindowTextW(hExp, ToEdit(tc.outText).c_str());
+    SetWindowTextW(hAct, ToEdit(tc.actual).c_str());
 }
 
 void App::SaveEditorsToTest() {
@@ -472,7 +472,7 @@ void App::SaveEditorsToTest() {
         int n = GetWindowTextLengthW(h);
         std::wstring w((size_t)n, L'\0');
         if (n) GetWindowTextW(h, &w[0], n + 1);
-        return W2U(w);
+        return FromEdit(w);
     };
     tc.inText = getText(hIn);
     tc.outText = getText(hExp);

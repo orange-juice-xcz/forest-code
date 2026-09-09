@@ -66,4 +66,8 @@ double NowMs();
 std::wstring NowStamp();
 bool IsAppShortcut(WPARAM key);   // 需要全局生效的快捷键（F 键 / Ctrl 组合）
 
+// EDIT 控件文本转换：控件要求 CRLF 换行
+std::wstring ToEdit(const std::string &utf8);    // UTF-8 + LF  ->  UTF-16 + CRLF
+std::string  FromEdit(const std::wstring &w);    // UTF-16 + CRLF -> UTF-8 + LF
+
 } // namespace fc

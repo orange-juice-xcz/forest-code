@@ -3,6 +3,7 @@
 #include "theme.h"
 #include "util.h"
 #include <windowsx.h>
+#include <uxtheme.h>
 #include <algorithm>
 
 namespace fc {
@@ -45,8 +46,10 @@ static void FormLayout(FormState *st) {
         int h = f.multiline ? g_theme.S(f.height ? f.height : 140) : g_theme.S(30);
         RECT er{ pad, y, pad + w, y + h };
         st->boxes.push_back(er);
-        SetWindowPos(st->edits[i], nullptr, er.left, er.top, er.right - er.left, er.bottom - er.top,
-                     SWP_NOZORDER | SWP_NOACTIVATE);
+        if (i < st->edits.size()) {
+            SetWindowPos(st->edits[i], nullptr, er.left, er.top, er.right - er.left, er.bottom - er.top,
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+        }
         y += h + g_theme.S(14);
     }
     int bh = g_theme.S(32);
@@ -106,16 +109,26 @@ static void FormCollect(FormState *st) {
         int n = GetWindowTextLengthW(h);
         std::wstring w((size_t)n, L'\0');
         if (n) GetWindowTextW(h, &w[0], n + 1);
-        (*st->fields)[i].value = w;
+        (*st->fields)[i].value = U2W(FromEdit(w));
     }
 }
 
 static LRESULT CALLBACK FormProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     FormState *st = g_form;
+    if (!st) return DefWindowProcW(hwnd, msg, wParam, lParam);
     switch (msg) {
     case WM_ERASEBKGND: return 1;
     case WM_PAINT: FormPaint(st); return 0;
     case WM_SIZE: FormLayout(st); return 0;
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORSTATIC: {
+        HDC dc = (HDC)wParam;
+        SetTextColor(dc, g_theme.c.text);
+        SetBkColor(dc, g_theme.c.bgSunken);
+        static HBRUSH br = nullptr;
+        if (!br) br = CreateSolidBrush(g_theme.c.bgSunken);
+        return (LRESULT)br;
+    }
     case WM_MOUSEMOVE: {
         POINT p{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         int h = -1;
@@ -190,23 +203,25 @@ bool ShowFormDialog(HWND parent, const std::wstring &title, std::vector<FormFiel
     int x = pr.left + ((pr.right - pr.left) - W) / 2;
     int y = pr.top + ((pr.bottom - pr.top) - H) / 2;
 
+    g_form = &st;   // 必须在 CreateWindowExW 之前，否则创建期间的 WM_SIZE 会拿到空指针
     st.hwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, L"ForestCodeForm", title.c_str(),
                               WS_POPUP | WS_CAPTION | WS_SYSMENU,
                               x, y, W, H, parent, nullptr, GetModuleHandleW(nullptr), nullptr);
-    if (!st.hwnd) return false;
-    g_form = &st;
+    if (!st.hwnd) { g_form = nullptr; return false; }
     ApplyDarkTitleBar(st.hwnd);
 
     for (auto &f : fields) {
         DWORD style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT;
         if (f.multiline) style |= ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL | ES_WANTRETURN;
         else style |= ES_AUTOHSCROLL;
-        HWND h = CreateWindowExW(0, L"EDIT", f.value.c_str(), style,
+        HWND h = CreateWindowExW(0, L"EDIT", ToEdit(W2U(f.value)).c_str(), style,
                                  0, 0, 10, 10, st.hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
         SendMessageW(h, WM_SETFONT, (WPARAM)(f.multiline ? g_theme.Mono() : g_theme.Ui()), TRUE);
         SendMessageW(h, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
                      MAKELPARAM(g_theme.S(6), g_theme.S(6)));
         SendMessageW(h, EM_SETSEL, 0, -1);
+        DarkenWindow(h);
+        SetWindowTheme(h, L"DarkMode_Explorer", nullptr);
         st.edits.push_back(h);
     }
 
@@ -246,6 +261,7 @@ static ChoiceState *g_choice = nullptr;
 
 static LRESULT CALLBACK ChoiceProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     ChoiceState *st = g_choice;
+    if (!st) return DefWindowProcW(hwnd, msg, wParam, lParam);
     switch (msg) {
     case WM_ERASEBKGND: return 1;
     case WM_PAINT: {
@@ -351,11 +367,11 @@ bool ShowChoiceDialog(HWND parent, const std::wstring &title, const std::wstring
     int x = pr.left + ((pr.right - pr.left) - W) / 2;
     int y = pr.top + ((pr.bottom - pr.top) - H) / 2;
 
+    g_choice = &st;
     st.hwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, L"ForestCodeChoice", title.c_str(),
                               WS_POPUP | WS_CAPTION | WS_SYSMENU, x, y, W, H,
                               parent, nullptr, GetModuleHandleW(nullptr), nullptr);
-    if (!st.hwnd) return false;
-    g_choice = &st;
+    if (!st.hwnd) { g_choice = nullptr; return false; }
     ApplyDarkTitleBar(st.hwnd);
 
     int yy = pad + g_theme.S(24) + g_theme.S(10);

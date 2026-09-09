@@ -10,6 +10,7 @@ param(
     [string]$Title = '',
     [string]$Out = 'shot.png',
     [int]$WaitMs = 2500,
+    [long]$Hwnd = 0,
     [switch]$Kill
 )
 
@@ -41,32 +42,33 @@ if ($Exe) {
     Start-Sleep -Milliseconds $WaitMs
 }
 
-$hwnd = [IntPtr]::Zero
-if ($Title) {
+$target = [IntPtr]::Zero
+if ($Hwnd -ne 0) { $target = [IntPtr]$Hwnd }
+if ($target -eq [IntPtr]::Zero -and $Title) {
     for ($i = 0; $i -lt 40; $i++) {
-        $hwnd = [FcWin]::FindWindowW($null, $Title)
-        if ($hwnd -ne [IntPtr]::Zero) { break }
+        $target = [FcWin]::FindWindowW($null, $Title)
+        if ($target -ne [IntPtr]::Zero) { break }
         Start-Sleep -Milliseconds 250
     }
 }
-if ($hwnd -eq [IntPtr]::Zero -and $proc) {
+if ($target -eq [IntPtr]::Zero -and $proc) {
     Start-Sleep -Milliseconds 500
     $proc.Refresh()
-    $hwnd = $proc.MainWindowHandle
+    $target = $proc.MainWindowHandle
 }
-if ($hwnd -eq [IntPtr]::Zero -and $Title) {
+if ($target -eq [IntPtr]::Zero -and $Title) {
     # 兜底：按标题对应的进程名查找
     $procs = Get-Process | Where-Object { $_.MainWindowTitle -eq $Title }
-    if ($procs) { $hwnd = $procs[0].MainWindowHandle }
+    if ($procs) { $target = $procs[0].MainWindowHandle }
 }
-if ($hwnd -eq [IntPtr]::Zero) { throw "window not found (title='$Title')" }
+if ($target -eq [IntPtr]::Zero) { throw "window not found (title='$Title')" }
 
-[void][FcWin]::ShowWindow($hwnd, 9)   # SW_RESTORE
-[void][FcWin]::SetForegroundWindow($hwnd)
+[void][FcWin]::ShowWindow($target, 9)   # SW_RESTORE
+[void][FcWin]::SetForegroundWindow($target)
 Start-Sleep -Milliseconds 700
 
 $r = New-Object FcWin+RECT
-[void][FcWin]::GetWindowRect($hwnd, [ref]$r)
+[void][FcWin]::GetWindowRect($target, [ref]$r)
 $w = $r.Right - $r.Left
 $h = $r.Bottom - $r.Top
 if ($w -le 0 -or $h -le 0) { throw "bad window rect ${w}x${h}" }
@@ -75,7 +77,7 @@ $bmp = New-Object System.Drawing.Bitmap($w, $h)
 $g = [System.Drawing.Graphics]::FromImage($bmp)
 $hdc = $g.GetHdc()
 # PW_RENDERFULLCONTENT = 2  (works for composited windows)
-$ok = [FcWin]::PrintWindow($hwnd, $hdc, 2)
+$ok = [FcWin]::PrintWindow($target, $hdc, 2)
 $g.ReleaseHdc($hdc)
 $g.Dispose()
 

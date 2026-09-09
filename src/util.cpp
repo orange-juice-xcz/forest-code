@@ -341,6 +341,27 @@ std::wstring NowStamp() {
     return FormatW(L"%04d-%02d-%02d %02d:%02d:%02d", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
 }
 
+std::wstring ToEdit(const std::string &utf8) {
+    std::string s;
+    s.reserve(utf8.size() + 64);
+    for (size_t i = 0; i < utf8.size(); ++i) {
+        if (utf8[i] == '\n' && (i == 0 || utf8[i - 1] != '\r')) s += "\r\n";
+        else s += utf8[i];
+    }
+    return U2W(s);
+}
+
+std::string FromEdit(const std::wstring &w) {
+    std::string s = W2U(w);
+    std::string o;
+    o.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '\r' && i + 1 < s.size() && s[i + 1] == '\n') continue;
+        o += s[i];
+    }
+    return o;
+}
+
 bool IsAppShortcut(WPARAM key) {
     switch (key) {
     case VK_F1: case VK_F5: case VK_F6: case VK_F9: case VK_F11:
