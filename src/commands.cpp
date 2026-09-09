@@ -712,17 +712,21 @@ void App::OnMouseMove(POINT p) {
         if (b.id >= 910 && b.id <= 912 && Hit(b.rc, p)) hotBottom = b.id - 910;
     }
 
-    int hotTest = -2;
+    int hotTest = -2, hotDel = -1;
     if (bottomVisible && bottomPage == BottomPage::Tests && Hit(rcTestList_, p)) {
         int rowH = g_theme.S(34);
         Doc *d = Active();
         Problem *pp = d ? ws.FindByFile(d->path) : nullptr;
         int count = pp ? (int)pp->tests.size() : 0;
         int idx = (p.y - rcTestList_.top - g_theme.S(6) + testScroll) / rowH;
-        if (idx >= 0 && idx < count) hotTest = idx;
-        else if (idx == count) hotTest = -1;   // 新增按钮
+        if (idx >= 0 && idx < count) {
+            hotTest = idx;
+            int rowTop = rcTestList_.top + g_theme.S(6) - testScroll + idx * rowH;
+            if (p.x >= rcTestList_.right - g_theme.S(30) && p.y < rowTop + rowH - g_theme.S(4)) hotDel = idx;
+        } else if (idx == count) hotTest = -1;   // 新增按钮
         else hotTest = -2;
     }
+    if (hotDel != hotTestDel) { hotTestDel = hotDel; InvalidateRect(hwnd_, &rcTestList_, FALSE); }
 
     // 分隔条光标
     int newSplit = 0;
@@ -797,6 +801,7 @@ void App::OnLButtonDown(POINT p) {
 
     // 测试列表
     if (bottomVisible && bottomPage == BottomPage::Tests && Hit(rcTestList_, p)) {
+        if (hotTestDel >= 0) { selTest = hotTestDel; CmdDeleteTest(); return; }
         if (hotTestRow == -1) { CmdAddTest(); return; }
         if (hotTestRow >= 0) {
             SaveEditorsToTest();

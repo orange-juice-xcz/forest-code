@@ -881,7 +881,7 @@ void App::PaintBottom(HDC dc) {
                       DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         }
 
-        RECT tr{ br.right + g_theme.S(8), r.top, r.right - g_theme.S(8), r.top + rowH / 2 };
+        RECT tr{ br.right + g_theme.S(8), r.top, r.right - g_theme.S(28), r.top + rowH / 2 };
         DrawTextC(dc, L"用例 " + std::to_wstring(i + 1), tr, sel ? c.text : c.textMuted,
                   g_theme.Ui(), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         RECT sr{ tr.left, r.top + rowH / 2 - g_theme.S(2), tr.right, r.bottom };
@@ -896,6 +896,13 @@ void App::PaintBottom(HDC dc) {
         }
         DrawTextC(dc, sub, sr, tc.hasResult ? (tc.passed ? c.ok : c.error) : c.textFaint,
                   g_theme.UiSmall(), DT_LEFT | DT_TOP | DT_SINGLELINE);
+
+        // 悬停/选中时显示删除按钮
+        if (sel || hov) {
+            RECT dr{ r.right - g_theme.S(26), r.top + g_theme.S(4), r.right - g_theme.S(4), r.bottom - g_theme.S(4) };
+            if (i == hotTestDel) FillRound(dc, dr, g_theme.S(4), c.bgActive);
+            DrawIconC(dc, glyph::Delete, dr, (i == hotTestDel) ? c.error : c.textFaint, g_theme.IconSmall());
+        }
     }
 
     // 新增按钮

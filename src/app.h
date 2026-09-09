@@ -105,6 +105,7 @@ public:
     int hotBottomTab = -1;
     int selTest = 0;
     int hotTestRow = -1;
+    int hotTestDel = -1;
     int testScroll = 0;
 
     // ---- 运行状态 ----
