@@ -1,0 +1,32 @@
+#include <windows.h>
+
+1 24 "forestcode.manifest"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     1,0,0,0
+PRODUCTVERSION  1,0,0,0
+FILEFLAGSMASK   0x3fL
+FILEFLAGS       0x0L
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+FILESUBTYPE     VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404B0"
+        BEGIN
+            VALUE "CompanyName",      "Forest Code"
+            VALUE "FileDescription",  "Forest Code - 竞赛工作台"
+            VALUE "FileVersion",      "1.0.0.0"
+            VALUE "InternalName",     "forest-code"
+            VALUE "LegalCopyright",   "MIT License"
+            VALUE "OriginalFilename", "forest-code.exe"
+            VALUE "ProductName",      "Forest Code"
+            VALUE "ProductVersion",   "1.0.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x804, 1200
+    END
+END

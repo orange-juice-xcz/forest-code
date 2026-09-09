@@ -1,0 +1,483 @@
+// Forest Code - 自绘对话框
+#include "app.h"
+#include "theme.h"
+#include "util.h"
+#include <windowsx.h>
+#include <algorithm>
+
+namespace fc {
+
+// ======================================================================
+//  通用表单对话框
+// ======================================================================
+struct FormState {
+    HWND hwnd = nullptr;
+    HWND parent = nullptr;
+    std::wstring title;
+    std::vector<FormField> *fields = nullptr;
+    std::vector<HWND> edits;
+    std::vector<RECT> labels;
+    std::vector<RECT> boxes;
+    RECT btnOk{}, btnCancel{};
+    int hot = -1;
+    int press = -1;
+    bool done = false;
+    bool ok = false;
+    int scroll = 0;
+};
+
+static FormState *g_form = nullptr;
+
+static void FormLayout(FormState *st) {
+    RECT rc; GetClientRect(st->hwnd, &rc);
+    int pad = g_theme.S(18);
+    int labelH = g_theme.S(20);
+    int y = pad - st->scroll;
+    int w = rc.right - pad * 2;
+
+    st->labels.clear();
+    st->boxes.clear();
+    for (size_t i = 0; i < st->fields->size(); ++i) {
+        FormField &f = (*st->fields)[i];
+        RECT lr{ pad, y, rc.right - pad, y + labelH };
+        st->labels.push_back(lr);
+        y += labelH;
+        int h = f.multiline ? g_theme.S(f.height ? f.height : 140) : g_theme.S(30);
+        RECT er{ pad, y, pad + w, y + h };
+        st->boxes.push_back(er);
+        SetWindowPos(st->edits[i], nullptr, er.left, er.top, er.right - er.left, er.bottom - er.top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+        y += h + g_theme.S(14);
+    }
+    int bh = g_theme.S(32);
+    int bw = g_theme.S(92);
+    int by = rc.bottom - pad - bh;
+    st->btnCancel = { rc.right - pad - bw, by, rc.right - pad, by + bh };
+    st->btnOk = { st->btnCancel.left - g_theme.S(10) - bw, by, st->btnCancel.left - g_theme.S(10), by + bh };
+}
+
+static void FormPaint(FormState *st) {
+    PAINTSTRUCT ps;
+    HDC dc = BeginPaint(st->hwnd, &ps);
+    RECT rc; GetClientRect(st->hwnd, &rc);
+    const Palette &c = g_theme.c;
+
+    HDC mem = CreateCompatibleDC(dc);
+    HBITMAP bmp = CreateCompatibleBitmap(dc, rc.right, rc.bottom);
+    HGDIOBJ old = SelectObject(mem, bmp);
+    FillRectC(mem, rc, c.bgPanel);
+
+    for (size_t i = 0; i < st->labels.size(); ++i) {
+        DrawTextC(mem, (*st->fields)[i].label, st->labels[i], c.textMuted, g_theme.Ui(),
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    }
+
+    auto button = [&](RECT r, const std::wstring &text, int idx, bool primary) {
+        bool hov = (st->hot == idx), pr = (st->press == idx);
+        int radius = g_theme.S(7);
+        if (primary) {
+            FillRound2(mem, r, radius, hov ? RGB(0x35, 0x86, 0x55) : c.accentDim,
+                       hov ? RGB(0x27, 0x68, 0x41) : c.accentDeep);
+            StrokeRound(mem, r, radius, hov ? c.accent : c.borderGlow, 1);
+            DrawTextC(mem, text, r, c.accentSoft, g_theme.Ui(),
+                      DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        } else {
+            if (hov) { FillRound(mem, r, radius, c.bgHover); StrokeRound(mem, r, radius, c.borderGlow, 1); }
+            else StrokeRound(mem, r, radius, c.border, 1);
+            DrawTextC(mem, text, r, hov ? c.text : c.textMuted, g_theme.Ui(),
+                      DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
+    };
+    button(st->btnOk, L"确定", 0, true);
+    button(st->btnCancel, L"取消", 1, false);
+
+    DrawHLine(mem, 0, rc.right, st->btnOk.top - g_theme.S(14), c.borderSoft);
+
+    BitBlt(dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
+    SelectObject(mem, old);
+    DeleteObject(bmp);
+    DeleteDC(mem);
+    EndPaint(st->hwnd, &ps);
+}
+
+static void FormCollect(FormState *st) {
+    for (size_t i = 0; i < st->edits.size(); ++i) {
+        HWND h = st->edits[i];
+        int n = GetWindowTextLengthW(h);
+        std::wstring w((size_t)n, L'\0');
+        if (n) GetWindowTextW(h, &w[0], n + 1);
+        (*st->fields)[i].value = w;
+    }
+}
+
+static LRESULT CALLBACK FormProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    FormState *st = g_form;
+    switch (msg) {
+    case WM_ERASEBKGND: return 1;
+    case WM_PAINT: FormPaint(st); return 0;
+    case WM_SIZE: FormLayout(st); return 0;
+    case WM_MOUSEMOVE: {
+        POINT p{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        int h = -1;
+        if (PtInRect(&st->btnOk, p)) h = 0;
+        else if (PtInRect(&st->btnCancel, p)) h = 1;
+        if (h != st->hot) { st->hot = h; InvalidateRect(hwnd, nullptr, FALSE); }
+        return 0;
+    }
+    case WM_LBUTTONDOWN: {
+        POINT p{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        if (PtInRect(&st->btnOk, p)) st->press = 0;
+        else if (PtInRect(&st->btnCancel, p)) st->press = 1;
+        if (st->press >= 0) SetCapture(hwnd);
+        return 0;
+    }
+    case WM_LBUTTONUP: {
+        POINT p{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        if (st->press == 0 && PtInRect(&st->btnOk, p)) { FormCollect(st); st->ok = true; st->done = true; }
+        if (st->press == 1 && PtInRect(&st->btnCancel, p)) { st->done = true; }
+        st->press = -1;
+        if (GetCapture() == hwnd) ReleaseCapture();
+        return 0;
+    }
+    case WM_KEYDOWN:
+        if (wParam == VK_ESCAPE) { st->done = true; return 0; }
+        if (wParam == VK_RETURN) {
+            HWND f = GetFocus();
+            bool multiline = false;
+            for (HWND h : st->edits) if (h == f) multiline = (GetWindowLongW(h, GWL_STYLE) & ES_MULTILINE) != 0;
+            if (!multiline) { FormCollect(st); st->ok = true; st->done = true; }
+            return 0;
+        }
+        break;
+    case WM_CLOSE:
+        st->done = true;
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+bool ShowFormDialog(HWND parent, const std::wstring &title, std::vector<FormField> &fields) {
+    static bool registered = false;
+    if (!registered) {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.style = CS_HREDRAW | CS_VREDRAW;
+        wc.lpfnWndProc = FormProc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        wc.lpszClassName = L"ForestCodeForm";
+        RegisterClassExW(&wc);
+        registered = true;
+    }
+
+    FormState st;
+    st.parent = parent;
+    st.title = title;
+    st.fields = &fields;
+
+    int pad = g_theme.S(18);
+    int labelH = g_theme.S(20);
+    int bodyH = 0;
+    for (auto &f : fields) {
+        bodyH += labelH;
+        bodyH += g_theme.S(f.multiline ? (f.height ? f.height : 140) : 30);
+        bodyH += g_theme.S(14);
+    }
+    int footer = g_theme.S(32) + g_theme.S(28);
+    int W = g_theme.S(520);
+    int H = bodyH + footer + pad * 2;
+    RECT pr; GetWindowRect(parent, &pr);
+    int x = pr.left + ((pr.right - pr.left) - W) / 2;
+    int y = pr.top + ((pr.bottom - pr.top) - H) / 2;
+
+    st.hwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, L"ForestCodeForm", title.c_str(),
+                              WS_POPUP | WS_CAPTION | WS_SYSMENU,
+                              x, y, W, H, parent, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!st.hwnd) return false;
+    g_form = &st;
+    ApplyDarkTitleBar(st.hwnd);
+
+    for (auto &f : fields) {
+        DWORD style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_LEFT;
+        if (f.multiline) style |= ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL | ES_WANTRETURN;
+        else style |= ES_AUTOHSCROLL;
+        HWND h = CreateWindowExW(0, L"EDIT", f.value.c_str(), style,
+                                 0, 0, 10, 10, st.hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+        SendMessageW(h, WM_SETFONT, (WPARAM)(f.multiline ? g_theme.Mono() : g_theme.Ui()), TRUE);
+        SendMessageW(h, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
+                     MAKELPARAM(g_theme.S(6), g_theme.S(6)));
+        SendMessageW(h, EM_SETSEL, 0, -1);
+        st.edits.push_back(h);
+    }
+
+    FormLayout(&st);
+    EnableWindow(parent, FALSE);
+    ShowWindow(st.hwnd, SW_SHOW);
+    SetForegroundWindow(st.hwnd);
+    if (!st.edits.empty()) SetFocus(st.edits[0]);
+
+    MSG msg;
+    while (!st.done && GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        if (IsDialogMessageW(st.hwnd, &msg)) continue;
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+    EnableWindow(parent, TRUE);
+    DestroyWindow(st.hwnd);
+    g_form = nullptr;
+    SetForegroundWindow(parent);
+    return st.ok;
+}
+
+// ======================================================================
+//  选择对话框（单选列表）
+// ======================================================================
+struct ChoiceState {
+    HWND hwnd = nullptr, parent = nullptr;
+    std::wstring title, message;
+    const std::vector<std::wstring> *choices = nullptr;
+    int selected = 0, hot = -1, hotBtn = -1;
+    RECT btnOk{}, btnCancel{};
+    bool done = false, ok = false;
+    std::vector<RECT> rows;
+};
+
+static ChoiceState *g_choice = nullptr;
+
+static LRESULT CALLBACK ChoiceProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    ChoiceState *st = g_choice;
+    switch (msg) {
+    case WM_ERASEBKGND: return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(hwnd, &ps);
+        RECT rc; GetClientRect(hwnd, &rc);
+        const Palette &c = g_theme.c;
+        HDC mem = CreateCompatibleDC(dc);
+        HBITMAP bmp = CreateCompatibleBitmap(dc, rc.right, rc.bottom);
+        HGDIOBJ old = SelectObject(mem, bmp);
+        FillRectC(mem, rc, c.bgPanel);
+        int pad = g_theme.S(18);
+        RECT mr{ pad, pad, rc.right - pad, pad + g_theme.S(24) };
+        DrawTextC(mem, st->message, mr, c.textMuted, g_theme.Ui(), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        for (size_t i = 0; i < st->rows.size(); ++i) {
+            RECT r = st->rows[i];
+            bool sel = ((int)i == st->selected);
+            bool hov = ((int)i == st->hot);
+            if (sel) { FillRound(mem, r, g_theme.S(6), c.bgActive); StrokeRound(mem, r, g_theme.S(6), c.accentDim, 1); }
+            else if (hov) FillRound(mem, r, g_theme.S(6), c.bgHover);
+            RECT ir{ r.left + g_theme.S(10), r.top, r.left + g_theme.S(26), r.bottom };
+            DrawIconC(mem, sel ? glyph::CheckMark : glyph::ChevronRight, ir,
+                      sel ? c.accent : c.textFaint, g_theme.IconSmall());
+            RECT tr{ ir.right + g_theme.S(4), r.top, r.right - g_theme.S(10), r.bottom };
+            DrawTextC(mem, (*st->choices)[i], tr, sel ? c.text : c.textMuted, g_theme.Ui(),
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        }
+        auto button = [&](RECT r, const wchar_t *text, int idx, bool primary) {
+            bool hov = (st->hotBtn == idx);
+            int radius = g_theme.S(7);
+            if (primary) {
+                FillRound2(mem, r, radius, hov ? RGB(0x35, 0x86, 0x55) : c.accentDim,
+                           hov ? RGB(0x27, 0x68, 0x41) : c.accentDeep);
+                StrokeRound(mem, r, radius, hov ? c.accent : c.borderGlow, 1);
+                DrawTextC(mem, text, r, c.accentSoft, g_theme.Ui(), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            } else {
+                if (hov) { FillRound(mem, r, radius, c.bgHover); StrokeRound(mem, r, radius, c.borderGlow, 1); }
+                else StrokeRound(mem, r, radius, c.border, 1);
+                DrawTextC(mem, text, r, hov ? c.text : c.textMuted, g_theme.Ui(), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
+        };
+        button(st->btnOk, L"确定", 0, true);
+        button(st->btnCancel, L"取消", 1, false);
+        BitBlt(dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
+        SelectObject(mem, old); DeleteObject(bmp); DeleteDC(mem);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_MOUSEMOVE: {
+        POINT p{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        int h = -1, hb = -1;
+        for (size_t i = 0; i < st->rows.size(); ++i) if (PtInRect(&st->rows[i], p)) h = (int)i;
+        if (PtInRect(&st->btnOk, p)) hb = 0;
+        else if (PtInRect(&st->btnCancel, p)) hb = 1;
+        if (h != st->hot || hb != st->hotBtn) { st->hot = h; st->hotBtn = hb; InvalidateRect(hwnd, nullptr, FALSE); }
+        return 0;
+    }
+    case WM_LBUTTONUP: {
+        POINT p{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        for (size_t i = 0; i < st->rows.size(); ++i)
+            if (PtInRect(&st->rows[i], p)) { st->selected = (int)i; InvalidateRect(hwnd, nullptr, FALSE); }
+        if (PtInRect(&st->btnOk, p)) { st->ok = true; st->done = true; }
+        if (PtInRect(&st->btnCancel, p)) st->done = true;
+        return 0;
+    }
+    case WM_KEYDOWN:
+        if (wParam == VK_ESCAPE) st->done = true;
+        else if (wParam == VK_RETURN) { st->ok = true; st->done = true; }
+        else if (wParam == VK_DOWN) { st->selected = std::min<int>(st->selected + 1, (int)st->choices->size() - 1); InvalidateRect(hwnd, nullptr, FALSE); }
+        else if (wParam == VK_UP) { st->selected = std::max(0, st->selected - 1); InvalidateRect(hwnd, nullptr, FALSE); }
+        return 0;
+    case WM_CLOSE: st->done = true; return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+bool ShowChoiceDialog(HWND parent, const std::wstring &title, const std::wstring &message,
+                      const std::vector<std::wstring> &choices, int &selected) {
+    static bool registered = false;
+    if (!registered) {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.style = CS_HREDRAW | CS_VREDRAW;
+        wc.lpfnWndProc = ChoiceProc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        wc.lpszClassName = L"ForestCodeChoice";
+        RegisterClassExW(&wc);
+        registered = true;
+    }
+    ChoiceState st;
+    st.parent = parent;
+    st.title = title;
+    st.message = message;
+    st.choices = &choices;
+    st.selected = selected;
+
+    int pad = g_theme.S(18);
+    int W = g_theme.S(420);
+    int rowH = g_theme.S(36);
+    int H = pad * 2 + g_theme.S(24) + g_theme.S(10) + rowH * (int)choices.size() + g_theme.S(28) + g_theme.S(32);
+    RECT pr; GetWindowRect(parent, &pr);
+    int x = pr.left + ((pr.right - pr.left) - W) / 2;
+    int y = pr.top + ((pr.bottom - pr.top) - H) / 2;
+
+    st.hwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, L"ForestCodeChoice", title.c_str(),
+                              WS_POPUP | WS_CAPTION | WS_SYSMENU, x, y, W, H,
+                              parent, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!st.hwnd) return false;
+    g_choice = &st;
+    ApplyDarkTitleBar(st.hwnd);
+
+    int yy = pad + g_theme.S(24) + g_theme.S(10);
+    for (size_t i = 0; i < choices.size(); ++i) {
+        st.rows.push_back(RECT{ pad, yy, W - pad, yy + rowH - g_theme.S(4) });
+        yy += rowH;
+    }
+    int bh = g_theme.S(32), bw = g_theme.S(92);
+    int by = H - pad - bh;
+    st.btnCancel = { W - pad - bw, by, W - pad, by + bh };
+    st.btnOk = { st.btnCancel.left - g_theme.S(10) - bw, by, st.btnCancel.left - g_theme.S(10), by + bh };
+
+    EnableWindow(parent, FALSE);
+    ShowWindow(st.hwnd, SW_SHOW);
+    SetForegroundWindow(st.hwnd);
+    SetFocus(st.hwnd);
+
+    MSG msg;
+    while (!st.done && GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        if (IsDialogMessageW(st.hwnd, &msg)) continue;
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+    EnableWindow(parent, TRUE);
+    DestroyWindow(st.hwnd);
+    g_choice = nullptr;
+    SetForegroundWindow(parent);
+    if (st.ok) selected = st.selected;
+    return st.ok;
+}
+
+// ======================================================================
+//  设置对话框
+// ======================================================================
+void App::ShowSettingsDialog() {
+    int stdChoice = 0;
+    std::vector<std::wstring> stds = { L"c++11", L"c++14", L"c++17", L"c++20" };
+    for (size_t i = 0; i < stds.size(); ++i) if (stds[i] == ws.settings.stdFlag) stdChoice = (int)i;
+
+    std::vector<FormField> fields;
+    auto add = [&](const wchar_t *label, const std::wstring &val, bool multi = false, int h = 0) {
+        FormField f; f.label = label; f.value = val; f.multiline = multi; f.height = h;
+        fields.push_back(f);
+    };
+    add(L"工作区目录", ws.settings.workspace);
+    add(L"编译器 (g++ 完整路径)", ws.settings.compiler);
+    add(L"C++ 标准 (c++11 / c++14 / c++17 / c++20)", ws.settings.stdFlag);
+    add(L"编译选项", ws.settings.compileFlags);
+    add(L"时间限制 (毫秒)", std::to_wstring(ws.settings.timeLimitMs));
+    add(L"代码字体", ws.settings.codeFont);
+    add(L"代码字号 (磅)", std::to_wstring(ws.settings.codeSize));
+    add(L"界面字体", ws.settings.uiFont);
+    add(L"界面字号 (磅)", std::to_wstring(ws.settings.uiSize));
+    add(L"自动保存 (1 / 0)", ws.settings.autoSave ? L"1" : L"0");
+
+    if (!ShowFormDialog(hwnd_, L"Forest Code 设置", fields)) return;
+
+    ws.settings.workspace = fields[0].value;
+    ws.settings.compiler = fields[1].value;
+    ws.settings.stdFlag = fields[2].value.empty() ? L"c++11" : fields[2].value;
+    ws.settings.compileFlags = fields[3].value;
+    ws.settings.timeLimitMs = _wtoi(fields[4].value.c_str());
+    if (ws.settings.timeLimitMs <= 0) ws.settings.timeLimitMs = 2000;
+    ws.settings.codeFont = fields[5].value.empty() ? L"Cascadia Code" : fields[5].value;
+    int cs = _wtoi(fields[6].value.c_str());
+    ws.settings.codeSize = cs > 0 ? cs : 11;
+    ws.settings.uiFont = fields[7].value.empty() ? L"Microsoft YaHei UI" : fields[7].value;
+    int us = _wtoi(fields[8].value.c_str());
+    ws.settings.uiSize = us > 0 ? us : 9;
+    ws.settings.autoSave = (fields[9].value == L"1");
+    ws.settings.Save();
+
+    g_theme.f.code = ws.settings.codeFont;
+    g_theme.f.codeSize = ws.settings.codeSize;
+    g_theme.f.ui = ws.settings.uiFont;
+    g_theme.f.uiSize = ws.settings.uiSize;
+    g_theme.SetDpi(g_theme.Dpi());
+    for (auto &d : docs) {
+        d->ed->SetCodeFont(ws.settings.codeFont, ws.settings.codeSize);
+        d->ed->SetLang(d->statement ? (FileExt(d->path) == L".md" ? Lang::Markdown : Lang::Plain) : Lang::Cpp);
+    }
+    for (HWND h : { hIn, hExp, hAct, hOut, hDiag })
+        if (h) SendMessageW(h, WM_SETFONT, (WPARAM)g_theme.Mono(), TRUE);
+
+    runner.Configure(ws.settings.compiler, ws.settings.stdFlag, ws.settings.compileFlags,
+                     ws.settings.timeLimitMs);
+    ws.LoadAll();
+    RebuildSidebar();
+    Layout();
+    InvalidateRect(hwnd_, nullptr, TRUE);
+    SetStatus(L"设置已保存");
+}
+
+// ======================================================================
+//  新建题目
+// ======================================================================
+void App::ShowNewProblemDialog() {
+    std::vector<FormField> fields;
+    auto add = [&](const wchar_t *label, const std::wstring &val, bool multi = false, int h = 0) {
+        FormField f; f.label = label; f.value = val; f.multiline = multi; f.height = h;
+        fields.push_back(f);
+    };
+    add(L"题目标题", L"");
+    add(L"来源（洛谷 / Codeforces / AtCoder / 校内 OJ …）", L"");
+    add(L"难度（入门 / 普及- / 普及 / 提高 / 省选 …）", L"");
+    add(L"标签（用空格分隔，例如 二分 贪心 dp）", L"");
+    add(L"初始解法代码", U2W(ws.DefaultTemplate()), true, 150);
+
+    if (!ShowFormDialog(hwnd_, L"新建题目", fields)) return;
+    std::wstring title = fields[0].value;
+    if (title.empty()) { SetStatus(L"题目名称不能为空"); return; }
+
+    Problem *p = ws.CreateProblem(title, fields[1].value, fields[2].value, fields[3].value,
+                                  fields[4].value, true);
+    RebuildSidebar();
+    InvalidateRect(hwnd_, nullptr, TRUE);
+    if (p) {
+        p->expanded = true;
+        RebuildSidebar();
+        if (!p->solutions.empty()) OpenFile(p->solutions[0].path);
+        SetStatus(L"已创建题目：" + title);
+    }
+}
+
+} // namespace fc

@@ -1,0 +1,21 @@
+# 构建产物
+build/
+*.o
+*.a
+*.exe
+*.obj
+
+# 第三方源码（由 build.ps1 自动下载）
+third_party/
+
+# 开发期截图
+*.png
+!preview.png
+!preview-completion.png
+
+# 编辑器 / 系统
+.vs/
+.vscode/
+*.user
+Thumbs.db
+desktop.ini
