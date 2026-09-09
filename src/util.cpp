@@ -240,6 +240,13 @@ bool WriteFileUtf8(const std::wstring &path, const std::string &data) {
     return WriteFileBytes(path, data);
 }
 
+bool DeleteDirRecursive(const std::wstring &path) {
+    if (!PathExists(path)) return true;
+    if (!IsDir(path)) return DeleteFileSafe(path);
+    for (auto &n : ListDir(path)) DeleteDirRecursive(JoinPath(path, n));
+    return RemoveDirectoryW(path.c_str()) != 0;
+}
+
 bool DeleteFileSafe(const std::wstring &path) {
     if (!PathExists(path)) return true;
     return DeleteFileW(path.c_str()) != 0;

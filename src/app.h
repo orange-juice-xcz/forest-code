@@ -57,6 +57,7 @@ struct FormField {
     bool multiline = false;
     int height = 0;
     bool password = false;
+    int browse = 0;      // 0=无 1=选文件 2=选目录
 };
 bool ShowFormDialog(HWND parent, const std::wstring &title, std::vector<FormField> &fields);
 bool ShowChoiceDialog(HWND parent, const std::wstring &title, const std::wstring &message,
@@ -106,6 +107,7 @@ public:
     int selTest = 0;
     int hotTestRow = -1;
     int hotTestDel = -1;
+    int ctxItem_ = -1;
     int testScroll = 0;
 
     // ---- 运行状态 ----
@@ -159,6 +161,16 @@ public:
     void CmdCopyOutput();
     void CmdTogglePanel();
     void CmdAbout();
+
+    // 侧栏右键菜单
+    void OnRButtonDown(POINT p);
+    void ShowSidebarMenu(int itemIndex);
+    void OnMenuCommand(int id);
+    void CmdRenameProblem(int problemIndex);
+    void CmdDeleteProblem(int problemIndex);
+    void CmdDeleteSolution(const std::wstring &path);
+    void CmdRevealInExplorer(const std::wstring &path);
+    void CmdNewScratch();
 
     // 运行
     void StartJob(bool compile, bool run, const std::string &stdinText, int token);

@@ -4,6 +4,8 @@
 #include "util.h"
 #include <windowsx.h>
 #include <uxtheme.h>
+#include <commdlg.h>
+#include <shlobj.h>
 #include <algorithm>
 
 namespace fc {
@@ -19,8 +21,10 @@ struct FormState {
     std::vector<HWND> edits;
     std::vector<RECT> labels;
     std::vector<RECT> boxes;
+    std::vector<RECT> browseRects;
     RECT btnOk{}, btnCancel{};
     int hot = -1;
+    int hotBrowse = -1;
     int press = -1;
     bool done = false;
     bool ok = false;
@@ -28,6 +32,35 @@ struct FormState {
 };
 
 static FormState *g_form = nullptr;
+
+static bool PickFileDlg(HWND owner, std::wstring &path) {
+    wchar_t buf[MAX_PATH * 4]{};
+    lstrcpynW(buf, path.c_str(), MAX_PATH * 4);
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter = L"可执行文件 (*.exe)\0*.exe\0所有文件 (*.*)\0*.*\0";
+    ofn.lpstrFile = buf;
+    ofn.nMaxFile = MAX_PATH * 4;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (GetOpenFileNameW(&ofn)) { path = buf; return true; }
+    return false;
+}
+
+static bool PickDirDlg(HWND owner, std::wstring &path) {
+    BROWSEINFOW bi{};
+    bi.hwndOwner = owner;
+    bi.lpszTitle = L"选择目录";
+    bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
+    LPITEMIDLIST idl = SHBrowseForFolderW(&bi);
+    if (!idl) return false;
+    wchar_t buf[MAX_PATH]{};
+    SHGetPathFromIDListW(idl, buf);
+    CoTaskMemFree(idl);
+    if (!buf[0]) return false;
+    path = buf;
+    return true;
+}
 
 static void FormLayout(FormState *st) {
     RECT rc; GetClientRect(st->hwnd, &rc);
@@ -38,13 +71,22 @@ static void FormLayout(FormState *st) {
 
     st->labels.clear();
     st->boxes.clear();
+    st->browseRects.clear();
     for (size_t i = 0; i < st->fields->size(); ++i) {
         FormField &f = (*st->fields)[i];
         RECT lr{ pad, y, rc.right - pad, y + labelH };
         st->labels.push_back(lr);
         y += labelH;
         int h = f.multiline ? g_theme.S(f.height ? f.height : 140) : g_theme.S(30);
-        RECT er{ pad, y, pad + w, y + h };
+        int editW = w;
+        RECT brc{ 0, 0, 0, 0 };
+        if (f.browse) {
+            int bwid = g_theme.S(76);
+            editW = w - bwid - g_theme.S(8);
+            brc = { pad + editW + g_theme.S(8), y, pad + editW + g_theme.S(8) + bwid, y + h };
+        }
+        st->browseRects.push_back(brc);
+        RECT er{ pad, y, pad + editW, y + h };
         st->boxes.push_back(er);
         if (i < st->edits.size()) {
             SetWindowPos(st->edits[i], nullptr, er.left, er.top, er.right - er.left, er.bottom - er.top,
@@ -94,6 +136,17 @@ static void FormPaint(FormState *st) {
     button(st->btnOk, L"确定", 0, true);
     button(st->btnCancel, L"取消", 1, false);
 
+    for (size_t i = 0; i < st->browseRects.size(); ++i) {
+        if ((*st->fields)[i].browse == 0) continue;
+        RECT r = st->browseRects[i];
+        bool hov = ((int)i == st->hotBrowse);
+        int radius = g_theme.S(7);
+        if (hov) { FillRound(mem, r, radius, c.bgHover); StrokeRound(mem, r, radius, c.borderGlow, 1); }
+        else StrokeRound(mem, r, radius, c.border, 1);
+        DrawTextC(mem, L"浏览…", r, hov ? c.text : c.textMuted, g_theme.Ui(),
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    }
+
     DrawHLine(mem, 0, rc.right, st->btnOk.top - g_theme.S(14), c.borderSoft);
 
     BitBlt(dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
@@ -134,7 +187,13 @@ static LRESULT CALLBACK FormProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         int h = -1;
         if (PtInRect(&st->btnOk, p)) h = 0;
         else if (PtInRect(&st->btnCancel, p)) h = 1;
-        if (h != st->hot) { st->hot = h; InvalidateRect(hwnd, nullptr, FALSE); }
+        int hb = -1;
+        for (size_t i = 0; i < st->browseRects.size(); ++i)
+            if ((*st->fields)[i].browse && PtInRect(&st->browseRects[i], p)) hb = (int)i;
+        if (h != st->hot || hb != st->hotBrowse) {
+            st->hot = h; st->hotBrowse = hb;
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
         return 0;
     }
     case WM_LBUTTONDOWN: {
@@ -148,6 +207,17 @@ static LRESULT CALLBACK FormProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         POINT p{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         if (st->press == 0 && PtInRect(&st->btnOk, p)) { FormCollect(st); st->ok = true; st->done = true; }
         if (st->press == 1 && PtInRect(&st->btnCancel, p)) { st->done = true; }
+        for (size_t i = 0; i < st->browseRects.size(); ++i) {
+            FormField &f = (*st->fields)[i];
+            if (!f.browse || !PtInRect(&st->browseRects[i], p)) continue;
+            std::wstring cur = f.value;
+            bool ok = (f.browse == 2) ? PickDirDlg(hwnd, cur) : PickFileDlg(hwnd, cur);
+            if (ok && i < st->edits.size()) {
+                SetWindowTextW(st->edits[i], ToEdit(W2U(cur)).c_str());
+                f.value = cur;
+            }
+            break;
+        }
         st->press = -1;
         if (GetCapture() == hwnd) ReleaseCapture();
         return 0;
@@ -219,9 +289,10 @@ bool ShowFormDialog(HWND parent, const std::wstring &title, std::vector<FormFiel
         SendMessageW(h, WM_SETFONT, (WPARAM)(f.multiline ? g_theme.Mono() : g_theme.Ui()), TRUE);
         SendMessageW(h, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
                      MAKELPARAM(g_theme.S(6), g_theme.S(6)));
-        SendMessageW(h, EM_SETSEL, 0, -1);
-        DarkenWindow(h);
-        SetWindowTheme(h, L"DarkMode_Explorer", nullptr);
+        if (f.multiline) {          // 只有多行框需要深色滚动条；单行框加主题会吞掉文字
+            DarkenWindow(h);
+            SetWindowTheme(h, L"DarkMode_Explorer", nullptr);
+        }
         st.edits.push_back(h);
     }
 
@@ -412,12 +483,12 @@ void App::ShowSettingsDialog() {
     for (size_t i = 0; i < stds.size(); ++i) if (stds[i] == ws.settings.stdFlag) stdChoice = (int)i;
 
     std::vector<FormField> fields;
-    auto add = [&](const wchar_t *label, const std::wstring &val, bool multi = false, int h = 0) {
-        FormField f; f.label = label; f.value = val; f.multiline = multi; f.height = h;
+    auto add = [&](const wchar_t *label, const std::wstring &val, bool multi = false, int h = 0, int browse = 0) {
+        FormField f; f.label = label; f.value = val; f.multiline = multi; f.height = h; f.browse = browse;
         fields.push_back(f);
     };
-    add(L"工作区目录", ws.settings.workspace);
-    add(L"编译器 (g++ 完整路径)", ws.settings.compiler);
+    add(L"工作区目录", ws.settings.workspace, false, 0, 2);
+    add(L"编译器 (g++ 完整路径)", ws.settings.compiler, false, 0, 1);
     add(L"C++ 标准 (c++11 / c++14 / c++17 / c++20)", ws.settings.stdFlag);
     add(L"编译选项", ws.settings.compileFlags);
     add(L"时间限制 (毫秒)", std::to_wstring(ws.settings.timeLimitMs));

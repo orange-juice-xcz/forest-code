@@ -114,6 +114,11 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         app.OnLButtonUp(p);
         return 0;
     }
+    case WM_RBUTTONDOWN: {
+        POINT p{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        app.OnRButtonDown(p);
+        return 0;
+    }
     case WM_LBUTTONDBLCLK: {
         POINT p{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         if (p.y < g_theme.TitleH()) {
@@ -206,7 +211,8 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     }
 
     case WM_COMMAND:
-        return SendMessageW(hwnd, WM_USER + 10, wParam, lParam);
+        app.OnMenuCommand(LOWORD(wParam));
+        return 0;
 
     case WM_DROPFILES: {
         HDROP hd = (HDROP)wParam;

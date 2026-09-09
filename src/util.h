@@ -39,6 +39,7 @@ bool WriteFileBytes(const std::wstring &path, const std::string &data);
 bool ReadFileUtf8(const std::wstring &path, std::string &out);
 bool WriteFileUtf8(const std::wstring &path, const std::string &data);
 bool DeleteFileSafe(const std::wstring &path);
+bool DeleteDirRecursive(const std::wstring &path);
 
 // ---------- INI（UTF-8，保持写入顺序） ----------
 class Ini {

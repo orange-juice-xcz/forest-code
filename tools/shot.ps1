@@ -11,6 +11,7 @@ param(
     [string]$Out = 'shot.png',
     [int]$WaitMs = 2500,
     [long]$Hwnd = 0,
+    [switch]$NoActivate,
     [switch]$Kill
 )
 
@@ -63,8 +64,10 @@ if ($target -eq [IntPtr]::Zero -and $Title) {
 }
 if ($target -eq [IntPtr]::Zero) { throw "window not found (title='$Title')" }
 
-[void][FcWin]::ShowWindow($target, 9)   # SW_RESTORE
-[void][FcWin]::SetForegroundWindow($target)
+if (-not $NoActivate) {
+    [void][FcWin]::ShowWindow($target, 9)   # SW_RESTORE
+    [void][FcWin]::SetForegroundWindow($target)
+}
 Start-Sleep -Milliseconds 700
 
 $r = New-Object FcWin+RECT

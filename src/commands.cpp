@@ -653,6 +653,226 @@ void App::CmdAbout() {
 }
 
 // ======================================================================
+//  侧栏右键菜单
+// ======================================================================
+void App::OnRButtonDown(POINT p) {
+    bool inSide = p.x >= rcSide_.left && p.x < rcSide_.right && p.y >= rcSide_.top && p.y < rcSide_.bottom;
+    if (!sideVisible || !inSide || p.y <= rcSideHead_.bottom) return;
+    int rowH = g_theme.S(28);
+    int idx = (p.y - rcSideHead_.bottom - g_theme.S(4) + sideScroll) / rowH;
+    if (idx < 0 || idx >= (int)sideItems.size()) return;
+    selSideItem_ = idx;
+    ctxItem_ = idx;
+    InvalidateRect(hwnd_, &rcSide_, FALSE);
+    ShowSidebarMenu(idx);
+}
+
+void App::ShowSidebarMenu(int idx) {
+    if (idx < 0 || idx >= (int)sideItems.size()) return;
+    SideItem it = sideItems[idx];
+
+    HMENU m = CreatePopupMenu();
+    auto item = [&](UINT id, const wchar_t *text, bool enabled = true, bool bold = false) {
+        MENUITEMINFOW mii{};
+        mii.cbSize = sizeof(mii);
+        mii.fMask = MIIM_ID | MIIM_STRING | MIIM_STATE;
+        mii.wID = id;
+        mii.dwTypeData = (LPWSTR)text;
+        mii.fState = enabled ? MFS_ENABLED : MFS_DISABLED;
+        if (bold) mii.fState |= MFS_DEFAULT;
+        InsertMenuItemW(m, (UINT)-1, TRUE, &mii);
+    };
+    auto sep = [&]() {
+        MENUITEMINFOW mii{};
+        mii.cbSize = sizeof(mii);
+        mii.fMask = MIIM_FTYPE;
+        mii.fType = MFT_SEPARATOR;
+        InsertMenuItemW(m, (UINT)-1, TRUE, &mii);
+    };
+
+    switch (it.kind) {
+    case SideItem::Kind::Problem:
+        item(3001, it.expanded ? L"折叠" : L"展开");
+        sep();
+        item(3003, L"新建解法…");
+        item(3004, L"新增测试用例");
+        sep();
+        item(3002, L"在资源管理器中打开");
+        item(3005, L"重命名题目…");
+        item(3006, L"删除题目…");
+        break;
+    case SideItem::Kind::Solution:
+        item(3001, L"打开");
+        item(3002, L"在资源管理器中打开");
+        sep();
+        item(3007, L"删除这个解法…");
+        break;
+    case SideItem::Kind::Statement:
+        item(3001, L"打开题面");
+        item(3002, L"在资源管理器中打开");
+        break;
+    case SideItem::Kind::Tests:
+        item(3004, L"新增测试用例");
+        break;
+    case SideItem::Kind::TestCase:
+        item(3001, L"切换到该用例");
+        item(3008, L"删除该用例…");
+        break;
+    case SideItem::Kind::NewSolution:
+        item(3003, L"新建解法…");
+        break;
+    case SideItem::Kind::Scratch:
+        item(3009, L"新建草稿文件…");
+        item(3002, L"在资源管理器中打开");
+        break;
+    }
+
+    POINT pt;
+    GetCursorPos(&pt);
+    SetForegroundWindow(hwnd_);
+    int cmd = (int)TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd_, nullptr);
+    DestroyMenu(m);
+    if (cmd) OnMenuCommand(cmd);
+}
+
+void App::OnMenuCommand(int id) {
+    if (ctxItem_ < 0 || ctxItem_ >= (int)sideItems.size()) return;
+    SideItem it = sideItems[ctxItem_];
+    Problem *p = (it.problem >= 0 && it.problem < (int)ws.problems.size()) ? &ws.problems[it.problem] : nullptr;
+
+    switch (id) {
+    case 3001:
+        if (it.kind == SideItem::Kind::Problem) {
+            if (p) { p->expanded = !p->expanded; RebuildSidebar(); }
+        } else if (it.kind == SideItem::Kind::TestCase) {
+            selTest = it.test;
+            bottomPage = BottomPage::Tests;
+            bottomVisible = true;
+            UpdateTestEditorsVisibility();
+            Layout();
+            LoadTestToEditors(selTest);
+        } else if (!it.path.empty()) {
+            OpenFile(it.path, it.kind == SideItem::Kind::Statement);
+        }
+        break;
+    case 3002:
+        CmdRevealInExplorer(it.path.empty() && p ? p->dir : it.path);
+        break;
+    case 3003:
+        CmdNewSolution();
+        break;
+    case 3004:
+        if (p) {
+            ws.AddTest(p);
+            selTest = (int)p->tests.size() - 1;
+            RebuildSidebar();
+            LoadTestToEditors(selTest);
+            bottomPage = BottomPage::Tests;
+            bottomVisible = true;
+            UpdateTestEditorsVisibility();
+            Layout();
+            SetStatus(L"已新增测试用例");
+        }
+        break;
+    case 3005:
+        CmdRenameProblem(it.problem);
+        break;
+    case 3006:
+        CmdDeleteProblem(it.problem);
+        break;
+    case 3007:
+        CmdDeleteSolution(it.path);
+        break;
+    case 3008:
+        if (p) { selTest = it.test; CmdDeleteTest(); }
+        break;
+    case 3009:
+        CmdNewScratch();
+        break;
+    }
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void App::CmdRevealInExplorer(const std::wstring &path) {
+    if (path.empty()) return;
+    if (IsDir(path)) {
+        ShellExecuteW(nullptr, L"open", L"explorer.exe", (L"\"" + path + L"\"").c_str(), nullptr, SW_SHOWNORMAL);
+    } else {
+        ShellExecuteW(nullptr, L"open", L"explorer.exe", (L"/select,\"" + path + L"\"").c_str(), nullptr, SW_SHOWNORMAL);
+    }
+}
+
+void App::CmdRenameProblem(int problemIndex) {
+    if (problemIndex < 0 || problemIndex >= (int)ws.problems.size()) return;
+    Problem &p = ws.problems[problemIndex];
+    std::vector<FormField> fields;
+    FormField f;
+    f.label = L"新的题目名称";
+    f.value = p.DisplayTitle();
+    fields.push_back(f);
+    if (!ShowFormDialog(hwnd_, L"重命名题目", fields)) return;
+    if (fields[0].value.empty()) return;
+    ws.RenameProblem(&p, fields[0].value);
+    RebuildSidebar();
+    SetStatus(L"已重命名为 " + fields[0].value);
+}
+
+void App::CmdDeleteProblem(int problemIndex) {
+    if (problemIndex < 0 || problemIndex >= (int)ws.problems.size()) return;
+    Problem &p = ws.problems[problemIndex];
+    std::wstring msg = L"删除题目「" + p.DisplayTitle() + L"」？\n\n目录及其中的题面、全部解法和测试用例都会被删除，此操作不可撤销。";
+    if (MessageBoxW(hwnd_, msg.c_str(), L"Forest Code", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
+        return;
+    // 关掉该题目下已打开的文档
+    for (int i = (int)docs.size() - 1; i >= 0; --i) {
+        if (docs[i]->path.rfind(p.dir, 0) == 0) CloseDoc(i);
+    }
+    std::wstring dir = p.dir;
+    if (DeleteDirRecursive(dir)) {
+        ws.RescanProblems();
+        RebuildSidebar();
+        SetStatus(L"已删除题目");
+    } else {
+        MessageBoxW(hwnd_, L"删除失败，可能有文件被占用。", L"Forest Code", MB_OK | MB_ICONERROR);
+    }
+}
+
+void App::CmdDeleteSolution(const std::wstring &path) {
+    if (path.empty()) return;
+    std::wstring msg = L"删除解法「" + FileName(path) + L"」？此操作不可撤销。";
+    if (MessageBoxW(hwnd_, msg.c_str(), L"Forest Code", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
+        return;
+    for (int i = (int)docs.size() - 1; i >= 0; --i) {
+        if (docs[i]->path == path) CloseDoc(i);
+    }
+    DeleteFileSafe(path);
+    for (auto &p : ws.problems) {
+        for (size_t i = 0; i < p.solutions.size(); ++i) {
+            if (p.solutions[i].path == path) { p.solutions.erase(p.solutions.begin() + i); break; }
+        }
+    }
+    RebuildSidebar();
+    SetStatus(L"已删除解法");
+}
+
+void App::CmdNewScratch() {
+    std::vector<FormField> fields;
+    FormField f;
+    f.label = L"文件名（不含扩展名）";
+    f.value = L"draft";
+    fields.push_back(f);
+    if (!ShowFormDialog(hwnd_, L"新建草稿文件", fields)) return;
+    if (fields[0].value.empty()) return;
+    std::wstring safe;
+    for (wchar_t ch : fields[0].value) safe += (wcschr(L"\\/:*?\"<>|", ch) ? L'_' : ch);
+    std::wstring path = JoinPath(ws.ScratchDir(), safe + L".cpp");
+    if (PathExists(path)) { SetStatus(L"文件已存在"); return; }
+    WriteFileUtf8(path, ws.DefaultTemplate());
+    RebuildSidebar();
+    OpenFile(path);
+    SetStatus(L"已新建草稿 " + safe + L".cpp");
+}
+// ======================================================================
 //  输入
 // ======================================================================
 static bool Hit(const RECT &r, POINT p) {
