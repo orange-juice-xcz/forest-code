@@ -24,6 +24,22 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         app.OnJobDone((RunResult *)lParam);
         return 0;
 
+    case WM_APP + 2:                 // 目录有变化（外部增删改）
+        app.OnDirChanged();
+        return 0;
+
+    case WM_APP + 3:                 // 就地重命名提交
+        app.CommitInlineRename(wParam != 0);
+        return 0;
+
+    case WM_TIMER:
+        if (wParam == 7) {
+            KillTimer(hwnd, 7);
+            app.ws.RescanProblems();
+            app.RebuildFileTree();
+        }
+        return 0;
+
     case WM_NCCALCSIZE:
         if (wParam) {
             NCCALCSIZE_PARAMS *p = (NCCALCSIZE_PARAMS *)lParam;
@@ -211,18 +227,14 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     }
 
     case WM_COMMAND:
-        app.OnMenuCommand(LOWORD(wParam));
+        if (LOWORD(wParam) >= 3100) app.OnFsMenuCommand(LOWORD(wParam));
         return 0;
 
     case WM_DROPFILES: {
         HDROP hd = (HDROP)wParam;
-        UINT n = DragQueryFileW(hd, 0xFFFFFFFF, nullptr, 0);
-        for (UINT i = 0; i < n; ++i) {
-            wchar_t buf[MAX_PATH * 4]{};
-            DragQueryFileW(hd, i, buf, MAX_PATH * 4);
-            if (IsDir(buf)) continue;
-            app.OpenFile(buf);
-        }
+        POINT pt{ 0, 0 };
+        DragQueryPoint(hd, &pt);
+        app.OnDropFiles(pt, hd);
         DragFinish(hd);
         app.Layout();
         InvalidateRect(hwnd, nullptr, FALSE);
@@ -320,7 +332,8 @@ bool App::Init(HINSTANCE inst) {
     hDiag = makeEdit(405, true);
 
     BuildSnippets();
-    RebuildSidebar();
+    RebuildFileTree();
+    StartDirWatch();
 
     // 打开上次文件或草稿
     bool opened = false;
@@ -702,7 +715,7 @@ void App::PaintSidebar(HDC dc) {
     FillRectC(dc, rcSide_, c.bgPanel);
     DrawVLine(dc, rcSide_.right - 1, rcSide_.top, rcSide_.bottom, c.border);
 
-    // 头部
+    // ---- 头部：工作区名 ----
     FillRectC(dc, rcSideHead_, c.bgPanel);
     {
         int d = g_theme.S(5);
@@ -712,29 +725,30 @@ void App::PaintSidebar(HDC dc) {
     }
     RECT tr = rcSideHead_;
     tr.left += g_theme.S(26);
-    tr.right = tr.left + g_theme.S(120);
-    DrawTextC(dc, L"题目", tr, c.text, g_theme.UiBold());
-    RECT cr = tr;
-    cr.left = tr.right;
-    cr.right = cr.left + g_theme.S(60);
-    DrawTextC(dc, L"(" + std::to_wstring(ws.problems.size()) + L")", cr, c.textFaint, g_theme.UiSmall());
+    tr.right = rcSide_.right - g_theme.S(90);
+    std::wstring title = FileName(ws.settings.workspace);
+    if (title.empty()) title = L"工作区";
+    DrawTextC(dc, title, tr, c.text, g_theme.UiBold(),
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
     for (auto &b : buttons) if (b.id >= 20 && b.id <= 22 && b.visible) DrawToolButton(dc, b, c, g_theme);
     DrawHLine(dc, rcSide_.left, rcSide_.right - 1, rcSideHead_.bottom - 1, c.borderSoft);
 
-    // 列表
+    // ---- 文件树 ----
     HRGN clip = CreateRectRgn(rcSide_.left, rcSideHead_.bottom, rcSide_.right - 1, rcSide_.bottom);
     SelectClipRgn(dc, clip);
-    int y = rcSideHead_.bottom + g_theme.S(4) - sideScroll;
-    int rowH = g_theme.S(28);
-    for (size_t i = 0; i < sideItems.size(); ++i) {
-        SideItem &it = sideItems[i];
-        RECT r{ rcSide_.left, y, rcSide_.right - 1, y + rowH };
-        y += rowH;
+
+    std::wstring activePath = Active() ? Active()->path : L"";
+
+    for (size_t i = 0; i < fsRows.size(); ++i) {
+        const FsRow &it = fsRows[i];
+        RECT r = FsRowRect((int)i);
         if (r.bottom < rcSideHead_.bottom || r.top > rcSide_.bottom) continue;
 
-        bool sel = ((int)i == selSideItem_);
-        bool hov = ((int)i == hotSideItem_);
-        if (sel) {
+        bool sel = ((int)i == selFsRow);
+        bool hov = ((int)i == hotFsRow);
+        bool isActive = (!it.isDir && it.path == activePath);
+
+        if (sel || isActive) {
             FillRectC(dc, r, c.bgActive);
             FillRectC(dc, RECT{ r.left, r.top, r.left + g_theme.S(2), r.bottom }, c.accent);
         } else if (hov) {
@@ -742,37 +756,69 @@ void App::PaintSidebar(HDC dc) {
         }
 
         int x = r.left + g_theme.S(10) + it.depth * g_theme.S(15);
-        // 展开箭头
-        if (it.canExpand) {
+
+        // 展开箭头（目录）
+        if (it.isDir) {
             RECT ar{ x, r.top, x + g_theme.S(14), r.bottom };
             DrawIconC(dc, it.expanded ? glyph::ChevronDown : glyph::ChevronRight,
                       ar, c.textFaint, g_theme.IconSmall());
         }
         x += g_theme.S(16);
+
         // 图标
         RECT ir{ x, r.top, x + g_theme.S(16), r.bottom };
         unsigned g = glyph::FileCode;
         COLORREF ic = c.textMuted;
-        switch (it.kind) {
-        case SideItem::Kind::Problem: g = it.expanded ? glyph::FolderOpen : glyph::Folder; ic = c.accent; break;
-        case SideItem::Kind::Statement: g = glyph::Info; ic = c.info; break;
-        case SideItem::Kind::Solution: g = glyph::FileCode; ic = c.accentSoft; break;
-        case SideItem::Kind::Tests: g = glyph::Test; ic = c.textMuted; break;
-        case SideItem::Kind::TestCase: g = glyph::Chip; ic = c.textFaint; break;
-        case SideItem::Kind::NewSolution: g = glyph::Add; ic = c.textFaint; break;
-        case SideItem::Kind::Scratch: g = glyph::Terminal; ic = c.warn; break;
+        if (it.isDir) {
+            g = it.expanded ? glyph::FolderOpen : glyph::Folder;
+            ic = c.accent;
+        } else {
+            std::wstring ext = FileExt(it.name);
+            if (ext == L".cpp" || ext == L".cc" || ext == L".cxx" || ext == L".c" || ext == L".h" || ext == L".hpp") {
+                g = glyph::FileCode; ic = c.accentSoft;
+            } else if (ext == L".md" || ext == L".txt") {
+                g = glyph::Info; ic = c.info;
+            } else if (ext == L".in" || ext == L".out" || ext == L".ans") {
+                g = glyph::Chip; ic = c.textFaint;
+            } else {
+                g = glyph::FileCode; ic = c.textFaint;
+            }
         }
         DrawIconC(dc, g, ir, ic, g_theme.IconSmall());
         x = ir.right + g_theme.S(7);
-        RECT tr2{ x, r.top, r.right - g_theme.S(8), r.bottom };
-        COLORREF tc = sel ? c.text : (it.kind == SideItem::Kind::NewSolution ? c.textFaint : c.text);
-        HFONT f = (it.kind == SideItem::Kind::Problem) ? g_theme.UiBold() : g_theme.Ui();
-        DrawTextC(dc, it.label, tr2, tc, f, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+
+        // 名字
+        RECT nr{ x, r.top, r.right - g_theme.S(22), r.bottom };
+        COLORREF tc = (sel || isActive) ? c.text : c.textMuted;
+        HFONT f = it.isDir ? g_theme.UiBold() : g_theme.Ui();
+        if (isActive) f = g_theme.UiBold();
+        DrawTextC(dc, it.name, nr, tc, f,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+
+        // 未保存圆点
+        if (!it.isDir && isActive && Active() && Active()->ed && Active()->ed->Modified()) {
+            int cx = r.right - g_theme.S(12), cy = (r.top + r.bottom) / 2;
+            int rr = g_theme.S(3);
+            HBRUSH br = CreateSolidBrush(c.accent);
+            HGDIOBJ ob = SelectObject(dc, br);
+            HGDIOBJ op = SelectObject(dc, GetStockObject(NULL_PEN));
+            Ellipse(dc, cx - rr, cy - rr, cx + rr + 1, cy + rr + 1);
+            SelectObject(dc, op); SelectObject(dc, ob);
+            DeleteObject(br);
+        }
     }
+
+    // 空工作区提示
+    if (fsRows.empty()) {
+        RECT er = rcSide_;
+        er.top = rcSideHead_.bottom + g_theme.S(20);
+        DrawTextC(dc, L"点上面的 ＋ 开始", er, c.textFaint, g_theme.Ui(),
+                  DT_CENTER | DT_TOP | DT_SINGLELINE | DT_NOPREFIX);
+    }
+
     SelectClipRgn(dc, nullptr);
     DeleteObject(clip);
 }
-
 // 手绘关闭叉：图标字体 E8BB 的字形在 em 盒里偏高，用 DT_VCENTER 居中会视觉上浮
 static void DrawCloseX(HDC dc, const RECT &r, COLORREF col, int thick) {
     int cx = (r.left + r.right) / 2;
@@ -883,12 +929,9 @@ void App::PaintBottom(HDC dc) {
     HRGN clip = CreateRectRgn(rcTestList_.left, rcTestList_.top, rcTestList_.right, rcTestList_.bottom);
     SelectClipRgn(dc, clip);
 
-    Problem *p = nullptr;
-    if (Doc *d = Active()) p = ws.FindByFile(d->path);
-
     int y = rcTestList_.top + g_theme.S(6) - testScroll;
     int rowH = g_theme.S(34);
-    int count = p ? (int)p->tests.size() : 0;
+    int count = (int)curTests.size();
 
     for (int i = 0; i < count; ++i) {
         RECT r{ rcTestList_.left + g_theme.S(6), y, rcTestList_.right - g_theme.S(8), y + rowH - g_theme.S(4) };
@@ -903,7 +946,7 @@ void App::PaintBottom(HDC dc) {
             FillRound(dc, r, g_theme.S(6), c.bgHover);
         }
 
-        const TestCase &tc = p->tests[i];
+        const TestCase &tc = curTests[i];
         // 状态徽章
         RECT br{ r.left + g_theme.S(8), r.top + g_theme.S(7), r.left + g_theme.S(24), r.bottom - g_theme.S(7) };
         if (tc.hasResult) {

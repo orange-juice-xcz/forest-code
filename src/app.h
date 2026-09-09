@@ -2,6 +2,7 @@
 #pragma once
 #include <windows.h>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 #include "editor.h"
@@ -27,16 +28,13 @@ struct UIButton {
 };
 
 // ---------------- 侧栏节点 ----------------
-struct SideItem {
-    enum class Kind { Problem, Statement, Solution, Tests, TestCase, NewSolution, Scratch };
-    Kind kind = Kind::Problem;
-    int problem = -1;
-    int test = -1;
-    std::wstring path;
-    std::wstring label;
-    int depth = 0;
+// ---------------- 文件树行 ----------------
+struct FsRow {
+    std::wstring path;      // 完整路径
+    std::wstring name;      // 显示名
+    bool isDir = false;
     bool expanded = false;
-    bool canExpand = false;
+    int depth = 0;
 };
 
 // ---------------- 打开文档 ----------------
@@ -87,8 +85,8 @@ public:
     int hotButton_ = -1;
     int pressedButton_ = -1;
     int hotTab_ = -1;
-    int hotSideItem_ = -1;
-    int selSideItem_ = -1;
+    int hotFsRow = -1;
+    int selFsRow = -1;
 
     // ---- 文档 ----
     std::vector<std::unique_ptr<Doc>> docs;
@@ -96,9 +94,15 @@ public:
     int hotDocTab = -1;
     int hotDocClose = -1;
 
-    // ---- 侧栏 ----
-    std::vector<SideItem> sideItems;
+    // ---- 文件树（侧栏）----
+    std::vector<FsRow> fsRows;
+    std::set<std::wstring> expandedDirs_;
     int sideScroll = 0;
+    HWND hRename = nullptr;      // 就地重命名用的输入框
+    int renameRow = -1;
+    HANDLE dirWatch_ = nullptr;  // 目录监听句柄
+    volatile bool watchStop_ = false;
+    bool treeDirty_ = false;
 
     // ---- 底部面板 ----
     BottomPage bottomPage = BottomPage::Tests;
@@ -132,8 +136,25 @@ public:
     void PaintBottom(HDC dc);
     void PaintStatus(HDC dc);
     void RebuildButtons();
-    void RebuildSidebar();
     void BuildSnippets();
+
+    // ---- 文件树 ----
+    void RebuildFileTree();
+    void ScanDirInto(const std::wstring &dir, int depth);
+    std::wstring TargetDir() const;             // 新建目标目录
+    RECT FsRowRect(int row) const;
+    int  FsRowAt(POINT p) const;
+    void CmdNewProblemHere();                   // ＋：一键新建题目
+    void CmdNewFileHere(bool folder);
+    void CmdDeletePath(const std::wstring &path);
+    void BeginInlineRename(int row);
+    void CommitInlineRename(bool accept);
+    void ShowFsMenu(int row);
+    void OnFsMenuCommand(int id);
+    void OnDropFiles(POINT clientPt, HDROP hd);
+    void StartDirWatch();
+    void OnDirChanged();
+    void RevealPath(const std::wstring &path);
 
     // 文档
     Doc *Active();
@@ -164,13 +185,6 @@ public:
 
     // 侧栏右键菜单
     void OnRButtonDown(POINT p);
-    void ShowSidebarMenu(int itemIndex);
-    void OnMenuCommand(int id);
-    void CmdRenameProblem(int problemIndex);
-    void CmdDeleteProblem(int problemIndex);
-    void CmdDeleteSolution(const std::wstring &path);
-    void CmdRevealInExplorer(const std::wstring &path);
-    void CmdNewScratch();
 
     // 运行
     void StartJob(bool compile, bool run, const std::string &stdinText, int token);
@@ -180,7 +194,10 @@ public:
     void RefreshDiagnostics();
     std::wstring ExePathFor(const std::wstring &src) const;
 
-    // 测试用例
+    // 测试用例（约定式：与代码同目录的 X.in + X.out）
+    std::wstring testDir_;
+    std::vector<TestCase> curTests;
+    void ScanTestsForActive();
     void LoadTestToEditors(int index);
     void SaveEditorsToTest();
     void UpdateTestEditorsVisibility();

@@ -78,6 +78,23 @@ bool IEquals(const std::string &a, const std::string &b) {
     return true;
 }
 
+bool NaturalLess(const std::wstring &a, const std::wstring &b) {
+    size_t i = 0, j = 0;
+    while (i < a.size() && j < b.size()) {
+        if (iswdigit(a[i]) && iswdigit(b[j])) {
+            long long va = 0, vb = 0;
+            while (i < a.size() && iswdigit(a[i])) { va = va * 10 + (a[i] - L'0'); ++i; }
+            while (j < b.size() && iswdigit(b[j])) { vb = vb * 10 + (b[j] - L'0'); ++j; }
+            if (va != vb) return va < vb;
+        } else {
+            wchar_t ca = towlower(a[i]), cb = towlower(b[j]);
+            if (ca != cb) return ca < cb;
+            ++i; ++j;
+        }
+    }
+    return a.size() < b.size();
+}
+
 std::string Format(const char *fmt, ...) {
     char buf[4096];
     va_list ap; va_start(ap, fmt);

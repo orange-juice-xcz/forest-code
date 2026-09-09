@@ -16,6 +16,7 @@ std::vector<std::wstring> SplitW(const std::wstring &s, wchar_t sep);
 bool StartsWith(const std::string &s, const std::string &p);
 bool EndsWith(const std::string &s, const std::string &p);
 bool IEquals(const std::string &a, const std::string &b);
+bool NaturalLess(const std::wstring &a, const std::wstring &b);   // 题目2 排在 题目10 前面
 std::string Format(const char *fmt, ...);
 std::wstring FormatW(const wchar_t *fmt, ...);
 

@@ -530,7 +530,7 @@ void App::ShowSettingsDialog() {
     runner.Configure(ws.settings.compiler, ws.settings.stdFlag, ws.settings.compileFlags,
                      ws.settings.timeLimitMs);
     ws.LoadAll();
-    RebuildSidebar();
+    RebuildFileTree();
     Layout();
     InvalidateRect(hwnd_, nullptr, TRUE);
     SetStatus(L"设置已保存");
@@ -557,11 +557,11 @@ void App::ShowNewProblemDialog() {
 
     Problem *p = ws.CreateProblem(title, fields[1].value, fields[2].value, fields[3].value,
                                   fields[4].value, true);
-    RebuildSidebar();
+    RebuildFileTree();
     InvalidateRect(hwnd_, nullptr, TRUE);
     if (p) {
         p->expanded = true;
-        RebuildSidebar();
+        RebuildFileTree();
         if (!p->solutions.empty()) OpenFile(p->solutions[0].path);
         SetStatus(L"已创建题目：" + title);
     }

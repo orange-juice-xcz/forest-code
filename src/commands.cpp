@@ -34,93 +34,6 @@ void App::BuildSnippets() {
     snippets_ = sn;
 }
 
-void App::RebuildSidebar() {
-    sideItems.clear();
-
-    // 草稿区
-    {
-        SideItem it;
-        it.kind = SideItem::Kind::Scratch;
-        it.label = L"草稿区";
-        it.depth = 0;
-        it.path = ws.ScratchDir();
-        sideItems.push_back(it);
-    }
-    for (auto &f : ListDir(ws.ScratchDir())) {
-        if (IsDir(JoinPath(ws.ScratchDir(), f))) continue;
-        if (FileExt(f) != L".cpp" && FileExt(f) != L".txt" && FileExt(f) != L".md") continue;
-        SideItem it;
-        it.kind = SideItem::Kind::Solution;
-        it.label = FileStem(f);
-        it.path = JoinPath(ws.ScratchDir(), f);
-        it.depth = 1;
-        sideItems.push_back(it);
-    }
-
-    for (size_t pi = 0; pi < ws.problems.size(); ++pi) {
-        Problem &p = ws.problems[pi];
-        SideItem it;
-        it.kind = SideItem::Kind::Problem;
-        it.problem = (int)pi;
-        it.label = p.DisplayTitle();
-        it.depth = 0;
-        it.canExpand = true;
-        it.expanded = p.expanded;
-        sideItems.push_back(it);
-
-        if (!p.expanded) continue;
-
-        if (!p.statementPath.empty()) {
-            SideItem s;
-            s.kind = SideItem::Kind::Statement;
-            s.problem = (int)pi;
-            s.path = p.statementPath;
-            s.label = L"题面";
-            s.depth = 1;
-            sideItems.push_back(s);
-        }
-        for (auto &sol : p.solutions) {
-            SideItem s;
-            s.kind = SideItem::Kind::Solution;
-            s.problem = (int)pi;
-            s.path = sol.path;
-            s.label = sol.name;
-            s.depth = 1;
-            sideItems.push_back(s);
-        }
-        {
-            SideItem s;
-            s.kind = SideItem::Kind::NewSolution;
-            s.problem = (int)pi;
-            s.label = L"新建解法…";
-            s.depth = 1;
-            sideItems.push_back(s);
-        }
-        {
-            SideItem s;
-            s.kind = SideItem::Kind::Tests;
-            s.problem = (int)pi;
-            s.label = L"测试用例 (" + std::to_wstring(p.tests.size()) + L")";
-            s.depth = 1;
-            s.canExpand = true;
-            s.expanded = p.testsExpanded;
-            sideItems.push_back(s);
-        }
-        if (p.testsExpanded) {
-            for (size_t ti = 0; ti < p.tests.size(); ++ti) {
-                SideItem s;
-                s.kind = SideItem::Kind::TestCase;
-                s.problem = (int)pi;
-                s.test = (int)ti;
-                s.label = L"用例 " + std::to_wstring(ti + 1);
-                s.depth = 2;
-                sideItems.push_back(s);
-            }
-        }
-    }
-    if (selSideItem_ >= (int)sideItems.size()) selSideItem_ = -1;
-}
-
 // ======================================================================
 //  文档
 // ======================================================================
@@ -183,6 +96,7 @@ void App::ShowActiveEditor() {
         }
     }
     ws.settings.lastFile = Active() ? Active()->path : L"";
+    ScanTestsForActive();
     LoadTestToEditors(selTest);
     for (auto &d : docs) if (d->ed) d->ed->ThemeScrollbars();
     InvalidateRect(hwnd_, nullptr, FALSE);
@@ -270,9 +184,8 @@ void App::RefreshRunPanel() {
     if (hAct) {
         std::string t;
         if (Doc *d = Active()) {
-            Problem *p = ws.FindByFile(d->path);
-            if (p && selTest >= 0 && selTest < (int)p->tests.size()) {
-                TestCase &tc = p->tests[selTest];
+            if (selTest >= 0 && selTest < (int)curTests.size()) {
+                TestCase &tc = curTests[selTest];
                 t = tc.actual;
                 if (!tc.stderrText.empty()) t += "\n[stderr]\n" + tc.stderrText;
             } else {
@@ -325,11 +238,10 @@ void App::OnJobDone(RunResult *r) {
     if (res->token == 101) {
         if (!res->compileOk) { runAllIndex = -1; RebuildButtons(); InvalidateRect(hwnd_, nullptr, FALSE); return; }
         Doc *d = Active();
-        Problem *p = d ? ws.FindByFile(d->path) : nullptr;
-        if (p && !p->tests.empty()) {
+        if (!curTests.empty()) {
             runAllIndex = 0;
-            runner.RunOnly(hwnd_, ExePathFor(d->path), p->tests[0].inText, d->path, 100);
-            SetStatus(FormatW(L"测试 1 / %d …", (int)p->tests.size()));
+            runner.RunOnly(hwnd_, ExePathFor(d->path), curTests[0].inText, d->path, 100);
+            SetStatus(FormatW(L"测试 1 / %d …", (int)curTests.size()));
         } else {
             runAllIndex = -1;
             jobRunning = false;
@@ -342,9 +254,8 @@ void App::OnJobDone(RunResult *r) {
     // 全部用例模式
     if (res->token == 100) {
         Doc *d = Active();
-        Problem *p = d ? ws.FindByFile(d->path) : nullptr;
-        if (p && runAllIndex >= 0 && runAllIndex < (int)p->tests.size()) {
-            TestCase &tc = p->tests[runAllIndex];
+        if (runAllIndex >= 0 && runAllIndex < (int)curTests.size()) {
+            TestCase &tc = curTests[runAllIndex];
             tc.hasResult = true;
             tc.actual = res->out;
             tc.stderrText = res->err;
@@ -370,15 +281,15 @@ void App::OnJobDone(RunResult *r) {
             RefreshRunPanel();
         }
         int next = runAllIndex + 1;
-        if (p && next < (int)p->tests.size()) {
+        if (next < (int)curTests.size()) {
             runAllIndex = next;
-            runner.RunOnly(hwnd_, ExePathFor(d->path), p->tests[next].inText, d->path, 100);
-            SetStatus(FormatW(L"测试 %d / %d …", next + 1, (int)p->tests.size()));
+            runner.RunOnly(hwnd_, ExePathFor(d->path), curTests[next].inText, d->path, 100);
+            SetStatus(FormatW(L"测试 %d / %d …", next + 1, (int)curTests.size()));
             return;
         }
         // 汇总
-        int pass = 0, total = p ? (int)p->tests.size() : 0;
-        if (p) for (auto &t : p->tests) if (t.hasResult && t.passed) ++pass;
+        int pass = 0, total = (int)curTests.size();
+        for (auto &t : curTests) if (t.hasResult && t.passed) ++pass;
         runAllIndex = -1;
         SetStatus(FormatW(L"全部用例完成：%d / %d 通过", pass, total));
         InvalidateRect(hwnd_, nullptr, FALSE);
@@ -399,9 +310,8 @@ void App::OnJobDone(RunResult *r) {
     if (res->ran) {
         lastOutput = res->out;
         Doc *d = Active();
-        Problem *p = d ? ws.FindByFile(d->path) : nullptr;
-        if (p && selTest >= 0 && selTest < (int)p->tests.size()) {
-            TestCase &tc = p->tests[selTest];
+        if (selTest >= 0 && selTest < (int)curTests.size()) {
+            TestCase &tc = curTests[selTest];
             tc.hasResult = true;
             tc.actual = res->out;
             tc.stderrText = res->err;
@@ -426,8 +336,8 @@ void App::OnJobDone(RunResult *r) {
         else if (res->exitCode != 0) s = FormatW(L"运行结束，返回码 %d", res->exitCode);
         else s = L"运行完成";
         s += FormatW(L"，用时 %.0f ms", res->runMs);
-        if (p && selTest >= 0 && selTest < (int)p->tests.size() && p->tests[selTest].hasExpected)
-            s += p->tests[selTest].passed ? L" · 通过 ✓" : L" · 答案错误 ✗";
+        if (selTest >= 0 && selTest < (int)curTests.size() && curTests[selTest].hasExpected)
+            s += curTests[selTest].passed ? L" · 通过 ✓" : L" · 答案错误 ✗";
         SetStatus(s);
         bottomPage = BottomPage::Tests;
         UpdateTestEditorsVisibility();
@@ -446,14 +356,13 @@ void App::OnJobDone(RunResult *r) {
 void App::LoadTestToEditors(int index) {
     if (!hIn) return;
     Doc *d = Active();
-    Problem *p = d ? ws.FindByFile(d->path) : nullptr;
-    if (!p || index < 0 || index >= (int)p->tests.size()) {
+    if (index < 0 || index >= (int)curTests.size()) {
         SetWindowTextW(hIn, L"");
         SetWindowTextW(hExp, L"");
         SetWindowTextW(hAct, L"");
         return;
     }
-    TestCase &tc = p->tests[index];
+    TestCase &tc = curTests[index];
     ReadFileUtf8(tc.inPath, tc.inText);
     if (tc.hasExpected) ReadFileUtf8(tc.outPath, tc.outText);
     SetWindowTextW(hIn, ToEdit(tc.inText).c_str());
@@ -464,9 +373,8 @@ void App::LoadTestToEditors(int index) {
 void App::SaveEditorsToTest() {
     if (!hIn) return;
     Doc *d = Active();
-    Problem *p = d ? ws.FindByFile(d->path) : nullptr;
-    if (!p || selTest < 0 || selTest >= (int)p->tests.size()) return;
-    TestCase &tc = p->tests[selTest];
+    if (selTest < 0 || selTest >= (int)curTests.size()) return;
+    TestCase &tc = curTests[selTest];
 
     auto getText = [](HWND h) {
         int n = GetWindowTextLengthW(h);
@@ -492,28 +400,37 @@ void App::UpdateTestEditorsVisibility() {
 }
 
 void App::CmdAddTest() {
-    Doc *d = Active();
-    Problem *p = d ? ws.FindByFile(d->path) : nullptr;
-    if (!p) { SetStatus(L"请先打开某个题目下的解法文件"); return; }
+    ScanTestsForActive();
+    if (testDir_.empty()) { SetStatus(L"请先打开一个代码文件"); return; }
     SaveEditorsToTest();
-    ws.AddTest(p);
-    selTest = (int)p->tests.size() - 1;
-    RebuildSidebar();
+    // 找最小空号，建 X.in / X.out 一对
+    int n = 1;
+    std::wstring inPath, outPath;
+    for (;; ++n) {
+        inPath = JoinPath(testDir_, std::to_wstring(n) + L".in");
+        if (!PathExists(inPath)) break;
+    }
+    outPath = JoinPath(testDir_, std::to_wstring(n) + L".out");
+    WriteFileUtf8(inPath, "");
+    WriteFileUtf8(outPath, "");
+    ScanTestsForActive();
+    selTest = (int)curTests.size() - 1;
+    RebuildFileTree();
     LoadTestToEditors(selTest);
     InvalidateRect(hwnd_, nullptr, FALSE);
-    SetStatus(L"已新增测试用例 " + std::to_wstring(selTest + 1));
+    SetStatus(FormatW(L"已新增用例 %d.in / %d.out", n, n));
 }
 
 void App::CmdDeleteTest() {
-    Doc *d = Active();
-    Problem *p = d ? ws.FindByFile(d->path) : nullptr;
-    if (!p || selTest < 0 || selTest >= (int)p->tests.size()) return;
-    if (MessageBoxW(hwnd_, FormatW(L"删除用例 %d ？", selTest + 1).c_str(), L"Forest Code",
-                    MB_YESNO | MB_ICONQUESTION) != IDYES) return;
-    ws.DeleteTest(p, selTest);
-    if (selTest >= (int)p->tests.size()) selTest = (int)p->tests.size() - 1;
+    if (selTest < 0 || selTest >= (int)curTests.size()) return;
+    if (MessageBoxW(hwnd_, FormatW(L"删除用例 %s ？", FileName(curTests[selTest].inPath).c_str()).c_str(),
+                    L"Forest Code", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
+    DeleteFileSafe(curTests[selTest].inPath);
+    DeleteFileSafe(curTests[selTest].outPath);
+    ScanTestsForActive();
+    if (selTest >= (int)curTests.size()) selTest = (int)curTests.size() - 1;
     if (selTest < 0) selTest = 0;
-    RebuildSidebar();
+    RebuildFileTree();
     LoadTestToEditors(selTest);
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
@@ -531,8 +448,7 @@ void App::CmdRun() {
     SaveEditorsToTest();
     std::wstring stdinText;
     Doc *d = Active();
-    Problem *p = d ? ws.FindByFile(d->path) : nullptr;
-    if (p && selTest >= 0 && selTest < (int)p->tests.size()) stdinText = U2W(p->tests[selTest].inText);
+    if (selTest >= 0 && selTest < (int)curTests.size()) stdinText = U2W(curTests[selTest].inText);
     std::wstring exe = ExePathFor(d ? d->path : L"");
     if (!PathExists(exe)) { CmdCompileRun(); return; }
     jobRunning = true; jobToken = 2;
@@ -546,46 +462,23 @@ void App::CmdCompileRun() {
     SaveEditorsToTest();
     std::wstring stdinText;
     Doc *d = Active();
-    Problem *p = d ? ws.FindByFile(d->path) : nullptr;
-    if (p && selTest >= 0 && selTest < (int)p->tests.size()) stdinText = U2W(p->tests[selTest].inText);
+    if (selTest >= 0 && selTest < (int)curTests.size()) stdinText = U2W(curTests[selTest].inText);
     StartJob(true, true, W2U(stdinText), 3);
 }
 
 void App::CmdRunAllTests() {
     if (jobRunning) return;
     Doc *d = Active();
-    Problem *p = d ? ws.FindByFile(d->path) : nullptr;
-    if (!p || p->tests.empty()) { SetStatus(L"当前题目没有测试用例"); return; }
+    ScanTestsForActive();
+    if (curTests.empty()) { SetStatus(L"当前目录没有 .in/.out 测试用例"); return; }
     SaveEditorsToTest();
-    for (auto &t : p->tests) { t.hasResult = false; t.actual.clear(); }
+    for (auto &t : curTests) { t.hasResult = false; t.actual.clear(); }
     runAllIndex = 0;
     jobRunning = true; jobToken = 100;
     SetStatus(L"正在编译…");
     RebuildButtons();
     // 先编译，成功后逐个跑
     StartJob(true, false, "", 101);
-}
-
-void App::CmdNewProblem() {
-    ShowNewProblemDialog();
-}
-
-void App::CmdNewSolution() {
-    Doc *d = Active();
-    Problem *p = d ? ws.FindByFile(d->path) : nullptr;
-    if (!p) { SetStatus(L"请先选中一个题目"); return; }
-
-    std::vector<FormField> fields;
-    FormField f1; f1.label = L"解法名称"; f1.value = FormatW(L"解法 %d", (int)p->solutions.size() + 1); fields.push_back(f1);
-    FormField f2; f2.label = L"代码模板"; f2.value = U2W(ws.DefaultTemplate()); f2.multiline = true; f2.height = 150; fields.push_back(f2);
-    if (!ShowFormDialog(hwnd_, L"新建解法", fields)) return;
-    if (fields[0].value.empty()) return;
-    ws.CreateSolution(p, fields[0].value, fields[1].value);
-    RebuildSidebar();
-    InvalidateRect(hwnd_, nullptr, FALSE);
-    // 打开新解法
-    for (auto &s : p->solutions) OpenFile(s.path);
-    SetStatus(L"已新建解法 " + fields[0].value);
 }
 
 void App::CmdSettings() { ShowSettingsDialog(); }
@@ -604,7 +497,7 @@ void App::CmdOpenWorkspace() {
     ws.settings.workspace = path;
     ws.settings.Save();
     ws.LoadAll();
-    RebuildSidebar();
+    RebuildFileTree();
     InvalidateRect(hwnd_, nullptr, TRUE);
     SetStatus(L"工作区已切换到 " + std::wstring(path));
 }
@@ -626,9 +519,8 @@ void App::CmdShowWhitespace(bool on) {
 
 void App::CmdCopyOutput() {
     if (Doc *d = Active()) {
-        Problem *p = ws.FindByFile(d->path);
-        if (p && selTest >= 0 && selTest < (int)p->tests.size()) {
-            CopyTextToClipboard(hwnd_, U2W(p->tests[selTest].actual));
+        if (selTest >= 0 && selTest < (int)curTests.size()) {
+            CopyTextToClipboard(hwnd_, U2W(curTests[selTest].actual));
             SetStatus(L"已复制实际输出");
         }
     }
@@ -656,222 +548,12 @@ void App::CmdAbout() {
 //  侧栏右键菜单
 // ======================================================================
 void App::OnRButtonDown(POINT p) {
-    bool inSide = p.x >= rcSide_.left && p.x < rcSide_.right && p.y >= rcSide_.top && p.y < rcSide_.bottom;
-    if (!sideVisible || !inSide || p.y <= rcSideHead_.bottom) return;
-    int rowH = g_theme.S(28);
-    int idx = (p.y - rcSideHead_.bottom - g_theme.S(4) + sideScroll) / rowH;
-    if (idx < 0 || idx >= (int)sideItems.size()) return;
-    selSideItem_ = idx;
-    ctxItem_ = idx;
-    InvalidateRect(hwnd_, &rcSide_, FALSE);
-    ShowSidebarMenu(idx);
+    if (hRename) CommitInlineRename(true);        // 正在改名时先提交
+    int row = FsRowAt(p);
+    if (row >= 0) { selFsRow = row; InvalidateRect(hwnd_, &rcSide_, FALSE); }
+    ShowFsMenu(row);
 }
 
-void App::ShowSidebarMenu(int idx) {
-    if (idx < 0 || idx >= (int)sideItems.size()) return;
-    SideItem it = sideItems[idx];
-
-    HMENU m = CreatePopupMenu();
-    auto item = [&](UINT id, const wchar_t *text, bool enabled = true, bool bold = false) {
-        MENUITEMINFOW mii{};
-        mii.cbSize = sizeof(mii);
-        mii.fMask = MIIM_ID | MIIM_STRING | MIIM_STATE;
-        mii.wID = id;
-        mii.dwTypeData = (LPWSTR)text;
-        mii.fState = enabled ? MFS_ENABLED : MFS_DISABLED;
-        if (bold) mii.fState |= MFS_DEFAULT;
-        InsertMenuItemW(m, (UINT)-1, TRUE, &mii);
-    };
-    auto sep = [&]() {
-        MENUITEMINFOW mii{};
-        mii.cbSize = sizeof(mii);
-        mii.fMask = MIIM_FTYPE;
-        mii.fType = MFT_SEPARATOR;
-        InsertMenuItemW(m, (UINT)-1, TRUE, &mii);
-    };
-
-    switch (it.kind) {
-    case SideItem::Kind::Problem:
-        item(3001, it.expanded ? L"折叠" : L"展开");
-        sep();
-        item(3003, L"新建解法…");
-        item(3004, L"新增测试用例");
-        sep();
-        item(3002, L"在资源管理器中打开");
-        item(3005, L"重命名题目…");
-        item(3006, L"删除题目…");
-        break;
-    case SideItem::Kind::Solution:
-        item(3001, L"打开");
-        item(3002, L"在资源管理器中打开");
-        sep();
-        item(3007, L"删除这个解法…");
-        break;
-    case SideItem::Kind::Statement:
-        item(3001, L"打开题面");
-        item(3002, L"在资源管理器中打开");
-        break;
-    case SideItem::Kind::Tests:
-        item(3004, L"新增测试用例");
-        break;
-    case SideItem::Kind::TestCase:
-        item(3001, L"切换到该用例");
-        item(3008, L"删除该用例…");
-        break;
-    case SideItem::Kind::NewSolution:
-        item(3003, L"新建解法…");
-        break;
-    case SideItem::Kind::Scratch:
-        item(3009, L"新建草稿文件…");
-        item(3002, L"在资源管理器中打开");
-        break;
-    }
-
-    POINT pt;
-    GetCursorPos(&pt);
-    SetForegroundWindow(hwnd_);
-    int cmd = (int)TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd_, nullptr);
-    DestroyMenu(m);
-    if (cmd) OnMenuCommand(cmd);
-}
-
-void App::OnMenuCommand(int id) {
-    if (ctxItem_ < 0 || ctxItem_ >= (int)sideItems.size()) return;
-    SideItem it = sideItems[ctxItem_];
-    Problem *p = (it.problem >= 0 && it.problem < (int)ws.problems.size()) ? &ws.problems[it.problem] : nullptr;
-
-    switch (id) {
-    case 3001:
-        if (it.kind == SideItem::Kind::Problem) {
-            if (p) { p->expanded = !p->expanded; RebuildSidebar(); }
-        } else if (it.kind == SideItem::Kind::TestCase) {
-            selTest = it.test;
-            bottomPage = BottomPage::Tests;
-            bottomVisible = true;
-            UpdateTestEditorsVisibility();
-            Layout();
-            LoadTestToEditors(selTest);
-        } else if (!it.path.empty()) {
-            OpenFile(it.path, it.kind == SideItem::Kind::Statement);
-        }
-        break;
-    case 3002:
-        CmdRevealInExplorer(it.path.empty() && p ? p->dir : it.path);
-        break;
-    case 3003:
-        CmdNewSolution();
-        break;
-    case 3004:
-        if (p) {
-            ws.AddTest(p);
-            selTest = (int)p->tests.size() - 1;
-            RebuildSidebar();
-            LoadTestToEditors(selTest);
-            bottomPage = BottomPage::Tests;
-            bottomVisible = true;
-            UpdateTestEditorsVisibility();
-            Layout();
-            SetStatus(L"已新增测试用例");
-        }
-        break;
-    case 3005:
-        CmdRenameProblem(it.problem);
-        break;
-    case 3006:
-        CmdDeleteProblem(it.problem);
-        break;
-    case 3007:
-        CmdDeleteSolution(it.path);
-        break;
-    case 3008:
-        if (p) { selTest = it.test; CmdDeleteTest(); }
-        break;
-    case 3009:
-        CmdNewScratch();
-        break;
-    }
-    InvalidateRect(hwnd_, nullptr, FALSE);
-}
-
-void App::CmdRevealInExplorer(const std::wstring &path) {
-    if (path.empty()) return;
-    if (IsDir(path)) {
-        ShellExecuteW(nullptr, L"open", L"explorer.exe", (L"\"" + path + L"\"").c_str(), nullptr, SW_SHOWNORMAL);
-    } else {
-        ShellExecuteW(nullptr, L"open", L"explorer.exe", (L"/select,\"" + path + L"\"").c_str(), nullptr, SW_SHOWNORMAL);
-    }
-}
-
-void App::CmdRenameProblem(int problemIndex) {
-    if (problemIndex < 0 || problemIndex >= (int)ws.problems.size()) return;
-    Problem &p = ws.problems[problemIndex];
-    std::vector<FormField> fields;
-    FormField f;
-    f.label = L"新的题目名称";
-    f.value = p.DisplayTitle();
-    fields.push_back(f);
-    if (!ShowFormDialog(hwnd_, L"重命名题目", fields)) return;
-    if (fields[0].value.empty()) return;
-    ws.RenameProblem(&p, fields[0].value);
-    RebuildSidebar();
-    SetStatus(L"已重命名为 " + fields[0].value);
-}
-
-void App::CmdDeleteProblem(int problemIndex) {
-    if (problemIndex < 0 || problemIndex >= (int)ws.problems.size()) return;
-    Problem &p = ws.problems[problemIndex];
-    std::wstring msg = L"删除题目「" + p.DisplayTitle() + L"」？\n\n目录及其中的题面、全部解法和测试用例都会被删除，此操作不可撤销。";
-    if (MessageBoxW(hwnd_, msg.c_str(), L"Forest Code", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
-        return;
-    // 关掉该题目下已打开的文档
-    for (int i = (int)docs.size() - 1; i >= 0; --i) {
-        if (docs[i]->path.rfind(p.dir, 0) == 0) CloseDoc(i);
-    }
-    std::wstring dir = p.dir;
-    if (DeleteDirRecursive(dir)) {
-        ws.RescanProblems();
-        RebuildSidebar();
-        SetStatus(L"已删除题目");
-    } else {
-        MessageBoxW(hwnd_, L"删除失败，可能有文件被占用。", L"Forest Code", MB_OK | MB_ICONERROR);
-    }
-}
-
-void App::CmdDeleteSolution(const std::wstring &path) {
-    if (path.empty()) return;
-    std::wstring msg = L"删除解法「" + FileName(path) + L"」？此操作不可撤销。";
-    if (MessageBoxW(hwnd_, msg.c_str(), L"Forest Code", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
-        return;
-    for (int i = (int)docs.size() - 1; i >= 0; --i) {
-        if (docs[i]->path == path) CloseDoc(i);
-    }
-    DeleteFileSafe(path);
-    for (auto &p : ws.problems) {
-        for (size_t i = 0; i < p.solutions.size(); ++i) {
-            if (p.solutions[i].path == path) { p.solutions.erase(p.solutions.begin() + i); break; }
-        }
-    }
-    RebuildSidebar();
-    SetStatus(L"已删除解法");
-}
-
-void App::CmdNewScratch() {
-    std::vector<FormField> fields;
-    FormField f;
-    f.label = L"文件名（不含扩展名）";
-    f.value = L"draft";
-    fields.push_back(f);
-    if (!ShowFormDialog(hwnd_, L"新建草稿文件", fields)) return;
-    if (fields[0].value.empty()) return;
-    std::wstring safe;
-    for (wchar_t ch : fields[0].value) safe += (wcschr(L"\\/:*?\"<>|", ch) ? L'_' : ch);
-    std::wstring path = JoinPath(ws.ScratchDir(), safe + L".cpp");
-    if (PathExists(path)) { SetStatus(L"文件已存在"); return; }
-    WriteFileUtf8(path, ws.DefaultTemplate());
-    RebuildSidebar();
-    OpenFile(path);
-    SetStatus(L"已新建草稿 " + safe + L".cpp");
-}
 // ======================================================================
 //  输入
 // ======================================================================
@@ -929,12 +611,7 @@ void App::OnMouseMove(POINT p) {
     int hotTab = TabIndexAt(p, &onCloseHit);
     int hotClose = onCloseHit ? hotTab : -1;
 
-    int hotSide = -1;
-    if (sideVisible && Hit(rcSide_, p) && p.y > rcSideHead_.bottom) {
-        int rowH = g_theme.S(28);
-        int idx = (p.y - rcSideHead_.bottom - g_theme.S(4) + sideScroll) / rowH;
-        if (idx >= 0 && idx < (int)sideItems.size()) hotSide = idx;
-    }
+    int hotSide = FsRowAt(p);
 
     int hotBottom = -1;
     for (auto &b : buttons) {
@@ -944,9 +621,7 @@ void App::OnMouseMove(POINT p) {
     int hotTest = -2, hotDel = -1;
     if (bottomVisible && bottomPage == BottomPage::Tests && Hit(rcTestList_, p)) {
         int rowH = g_theme.S(34);
-        Doc *d = Active();
-        Problem *pp = d ? ws.FindByFile(d->path) : nullptr;
-        int count = pp ? (int)pp->tests.size() : 0;
+        int count = (int)curTests.size();
         int idx = (p.y - rcTestList_.top - g_theme.S(6) + testScroll) / rowH;
         if (idx >= 0 && idx < count) {
             hotTest = idx;
@@ -964,10 +639,10 @@ void App::OnMouseMove(POINT p) {
     if (bottomVisible && std::abs(p.y - rcBottom_.top) < g_theme.S(5) && p.x > rcBottom_.left) newSplit = 2;
 
     if (hotBtn != hotButton_ || hotTab != hotDocTab || hotClose != hotDocClose ||
-        hotSide != hotSideItem_ || hotBottom != hotBottomTab || hotTest != hotTestRow ||
+        hotSide != hotFsRow || hotBottom != hotBottomTab || hotTest != hotTestRow ||
         newSplit != dragSplitSide_) {
         hotButton_ = hotBtn; hotDocTab = hotTab; hotDocClose = hotClose;
-        hotSideItem_ = hotSide; hotBottomTab = hotBottom; hotTestRow = hotTest;
+        hotFsRow = hotSide; hotBottomTab = hotBottom; hotTestRow = hotTest;
         if (!resizing_ && !chromeDragging_) dragSplitSide_ = newSplit;
         InvalidateRect(hwnd_, nullptr, FALSE);
     }
@@ -977,7 +652,7 @@ void App::OnMouseMove(POINT p) {
 
 void App::OnMouseLeave() {
     hotButton_ = -1; hotDocTab = -1; hotDocClose = -1;
-    hotSideItem_ = -1; hotBottomTab = -1; hotTestRow = -2;
+    hotFsRow = -1; hotBottomTab = -1; hotTestRow = -2;
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
@@ -1047,34 +722,19 @@ void App::OnLButtonDown(POINT p) {
         }
     }
 
-    // 侧栏
-    if (sideVisible && Hit(rcSide_, p) && p.y > rcSideHead_.bottom && hotSideItem_ >= 0) {
-        selSideItem_ = hotSideItem_;
-        SideItem it = sideItems[hotSideItem_];
-        if (it.canExpand) {
-            if (it.kind == SideItem::Kind::Problem && it.problem >= 0)
-                ws.problems[it.problem].expanded = !ws.problems[it.problem].expanded;
-            else if (it.kind == SideItem::Kind::Tests && it.problem >= 0)
-                ws.problems[it.problem].testsExpanded = !ws.problems[it.problem].testsExpanded;
-            RebuildSidebar();
+    // 文件树
+    int row = FsRowAt(p);
+    if (row >= 0) {
+        if (hRename) CommitInlineRename(true);
+        selFsRow = row;
+        FsRow it = fsRows[row];
+        if (it.isDir) {
+            auto f = expandedDirs_.find(it.path);
+            if (f == expandedDirs_.end()) expandedDirs_.insert(it.path);
+            else expandedDirs_.erase(f);
+            RebuildFileTree();
         } else {
-            switch (it.kind) {
-            case SideItem::Kind::Statement: OpenFile(it.path, true); break;
-            case SideItem::Kind::Solution: OpenFile(it.path); break;
-            case SideItem::Kind::NewSolution: {
-                CmdNewSolution();
-                break;
-            }
-            case SideItem::Kind::TestCase:
-                selTest = it.test;
-                LoadTestToEditors(selTest);
-                bottomPage = BottomPage::Tests;
-                bottomVisible = true;
-                UpdateTestEditorsVisibility();
-                Layout();
-                break;
-            default: break;
-            }
+            OpenFile(it.path);
         }
         InvalidateRect(hwnd_, nullptr, FALSE);
         return;
@@ -1100,7 +760,7 @@ void App::OnLButtonUp(POINT p) {
             case 7: CmdAbout(); break;
             case 8: CmdRunAllTests(); break;
             case 20: CmdNewProblem(); break;
-            case 21: ws.RescanProblems(); RebuildSidebar(); SetStatus(L"已刷新"); break;
+            case 21: ws.RescanProblems(); RebuildFileTree(); SetStatus(L"已刷新"); break;
             }
         }
         InvalidateRect(hwnd_, nullptr, FALSE);
