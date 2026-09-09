@@ -145,6 +145,9 @@ void DrawTextUtf8(HDC dc, const std::string &s, RECT r, COLORREF col, HFONT font
                   UINT flags = DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 int  TextWidth(HDC dc, const std::wstring &s, HFONT font);
 
+// 品牌标记：小松树矢量（与 exe 图标同款）
+void DrawLogoMark(HDC dc, const RECT &r, COLORREF col);
+
 // 图标（Segoe Fluent Icons 码点）
 void DrawIconC(HDC dc, unsigned int glyph, RECT r, COLORREF col, HFONT font = nullptr,
                UINT align = DT_CENTER | DT_VCENTER);

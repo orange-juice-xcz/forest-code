@@ -170,6 +170,34 @@ int TextWidth(HDC dc, const std::wstring &s, HFONT font) {
     return sz.cx;
 }
 
+void DrawLogoMark(HDC dc, const RECT &r, COLORREF col) {
+    int w = r.right - r.left, h = r.bottom - r.top;
+    if (w <= 0 || h <= 0) return;
+    // 在 256x256 设计坐标里定义，按实际矩形等比缩放
+    auto px = [&](int v) { return r.left + (v * w) / 256; };
+    auto py = [&](int v) { return r.top + (v * h) / 256; };
+
+    HBRUSH br = CreateSolidBrush(col);
+    HGDIOBJ oldB = SelectObject(dc, br);
+    HGDIOBJ oldP = SelectObject(dc, GetStockObject(NULL_PEN));
+
+    POINT trunk[4] = { {px(105), py(162)}, {px(151), py(162)}, {px(151), py(214)}, {px(105), py(214)} };
+    Polygon(dc, trunk, 4);
+
+    struct Tier { int apexY, baseY, halfW; };
+    const Tier tiers[3] = { {118, 168, 88}, {84, 136, 72}, {50, 100, 56} };
+    for (const Tier &tier : tiers) {
+        POINT p[3] = { {px(128), py(tier.apexY)},
+                       {px(128 - tier.halfW), py(tier.baseY)},
+                       {px(128 + tier.halfW), py(tier.baseY)} };
+        Polygon(dc, p, 3);
+    }
+
+    SelectObject(dc, oldP);
+    SelectObject(dc, oldB);
+    DeleteObject(br);
+}
+
 void DrawIconC(HDC dc, unsigned int glyphCode, RECT r, COLORREF col, HFONT font, UINT align) {
     wchar_t buf[2] = { (wchar_t)glyphCode, 0 };
     // 注意：DT_VCENTER 只有配合 DT_SINGLELINE 才生效，漏了就会变成顶对齐

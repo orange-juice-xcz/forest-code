@@ -653,7 +653,13 @@ void App::PaintTitle(HDC dc) {
     RECT logo{ x, y, x + s, y + s };
     FillRound(dc, logo, g_theme.S(6), c.accentDeep);
     StrokeRound(dc, logo, g_theme.S(6), c.accentDim, 1);
-    DrawIconC(dc, glyph::Tree, logo, c.accent, g_theme.IconSmall());
+    {
+        RECT mark = logo;
+        int inset = g_theme.S(4);
+        mark.left += inset; mark.top += inset;
+        mark.right -= inset; mark.bottom -= inset;
+        DrawLogoMark(dc, mark, c.accent);
+    }
 
     RECT tr = rcTitle_;
     tr.left = logo.right + g_theme.S(9);
