@@ -153,9 +153,7 @@ bool Workspace::LoadAll() {
     if (settings.compiler.empty() || !PathExists(settings.compiler))
         settings.compiler = DetectCompiler();
     MakeDirs(settings.workspace);
-    MakeDirs(ProblemsDir());
-    MakeDirs(ScratchDir());
-    MakeDirs(BuildDir());
+    MakeDirs(BuildDir());          // 只建编译产物目录；其余目录由用户自己决定
     return RescanProblems();
 }
 

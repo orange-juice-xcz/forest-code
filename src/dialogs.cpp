@@ -316,6 +316,256 @@ bool ShowFormDialog(HWND parent, const std::wstring &title, std::vector<FormFiel
 }
 
 // ======================================================================
+//  首次启动：选择工作区（Obsidian 式，只问一次）
+// ======================================================================
+struct FirstRunState {
+    HWND hwnd = nullptr, parent = nullptr, edit = nullptr;
+    RECT btnBrowse{}, btnOk{}, btnCancel{}, logo{}, rcPath{};
+    int hot = -1, press = -1;
+    bool done = false, ok = false;
+    std::wstring value;
+};
+
+static FirstRunState *g_first = nullptr;
+
+static void FirstRunLayout(FirstRunState *st) {
+    RECT rc; GetClientRect(st->hwnd, &rc);
+    int pad = g_theme.S(26);
+    int W = rc.right - pad * 2;
+
+    st->logo = { pad, pad, pad + g_theme.S(44), pad + g_theme.S(44) };
+    int y = pad + g_theme.S(74);                    // 标题区之后
+
+    int bh = g_theme.S(32);
+    int browseW = g_theme.S(80);
+    st->rcPath = { pad, y, pad + W - browseW - g_theme.S(8), y + bh };
+    st->btnBrowse = { st->rcPath.right + g_theme.S(8), y, pad + W, y + bh };
+    if (st->edit) {
+        SetWindowPos(st->edit, nullptr, st->rcPath.left, st->rcPath.top,
+                     st->rcPath.right - st->rcPath.left, st->rcPath.bottom - st->rcPath.top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+
+    int by = rc.bottom - pad - bh;
+    int bw = g_theme.S(110);
+    st->btnCancel = { rc.right - pad - bw, by, rc.right - pad, by + bh };
+    st->btnOk = { st->btnCancel.left - g_theme.S(10) - bw, by, st->btnCancel.left - g_theme.S(10), by + bh };
+}
+
+static void FirstRunPaint(FirstRunState *st) {
+    PAINTSTRUCT ps;
+    HDC dc = BeginPaint(st->hwnd, &ps);
+    RECT rc; GetClientRect(st->hwnd, &rc);
+    const Palette &c = g_theme.c;
+
+    HDC mem = CreateCompatibleDC(dc);
+    HBITMAP bmp = CreateCompatibleBitmap(dc, rc.right, rc.bottom);
+    HGDIOBJ old = SelectObject(mem, bmp);
+    FillRectC(mem, rc, c.bgPanel);
+
+    // 品牌
+    FillRound(mem, st->logo, g_theme.S(11), c.accentDeep);
+    StrokeRound(mem, st->logo, g_theme.S(11), c.accentDim, 1);
+    {
+        RECT mk = st->logo;
+        int inset = g_theme.S(9);
+        mk.left += inset; mk.top += inset; mk.right -= inset; mk.bottom -= inset;
+        DrawLogoMark(mem, mk, c.accent);
+    }
+    int pad = g_theme.S(26);
+    RECT tr{ st->logo.right + g_theme.S(14), st->logo.top, rc.right - pad, st->logo.top + g_theme.S(26) };
+    DrawTextC(mem, L"欢迎使用 Forest Code", tr, c.text, g_theme.UiBold());
+    RECT sr{ tr.left, tr.bottom - g_theme.S(2), rc.right - pad, tr.bottom + g_theme.S(22) };
+    DrawTextC(mem, L"先选一个工作区，你的题目、代码、测试用例都会放在这里。", sr, c.textMuted, g_theme.UiSmall());
+
+    // 路径标签
+    RECT lb{ pad, st->rcPath.top - g_theme.S(22), rc.right - pad, st->rcPath.top };
+    DrawTextC(mem, L"工作区位置", lb, c.textMuted, g_theme.Ui());
+
+    // 提示
+    RECT hint{ pad, st->rcPath.bottom + g_theme.S(12), rc.right - pad, st->rcPath.bottom + g_theme.S(46) };
+    DrawTextC(mem, L"文件夹不存在会自动创建。以后想换，右键侧栏标题即可切换。", hint, c.textFaint, g_theme.UiSmall());
+
+    auto button = [&](RECT r, const std::wstring &text, int idx, bool primary) {
+        bool hov = (st->hot == idx);
+        int radius = g_theme.S(7);
+        if (primary) {
+            FillRound2(mem, r, radius, hov ? RGB(0x35, 0x86, 0x55) : c.accentDim,
+                       hov ? RGB(0x27, 0x68, 0x41) : c.accentDeep);
+            StrokeRound(mem, r, radius, hov ? c.accent : c.borderGlow, 1);
+            DrawTextC(mem, text, r, c.accentSoft, g_theme.Ui(), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        } else {
+            if (hov) { FillRound(mem, r, radius, c.bgHover); StrokeRound(mem, r, radius, c.borderGlow, 1); }
+            else StrokeRound(mem, r, radius, c.border, 1);
+            DrawTextC(mem, text, r, hov ? c.text : c.textMuted, g_theme.Ui(),
+                      DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
+    };
+    button(st->btnBrowse, L"浏览…", 2, false);
+    button(st->btnOk, L"开始使用", 0, true);
+    button(st->btnCancel, L"退出", 1, false);
+
+    BitBlt(dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
+    SelectObject(mem, old);
+    DeleteObject(bmp);
+    DeleteDC(mem);
+    EndPaint(st->hwnd, &ps);
+}
+
+static std::wstring FirstRunText(FirstRunState *st) {
+    int n = GetWindowTextLengthW(st->edit);
+    std::wstring w((size_t)n, L'\0');
+    if (n) GetWindowTextW(st->edit, &w[0], n + 1);
+    return TrimW(w);
+}
+
+static LRESULT CALLBACK FirstRunProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    FirstRunState *st = g_first;
+    if (!st) return DefWindowProcW(hwnd, msg, wParam, lParam);
+    switch (msg) {
+    case WM_ERASEBKGND: return 1;
+    case WM_PAINT: FirstRunPaint(st); return 0;
+    case WM_SIZE: FirstRunLayout(st); return 0;
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORSTATIC: {
+        HDC dc = (HDC)wParam;
+        SetTextColor(dc, g_theme.c.text);
+        SetBkColor(dc, g_theme.c.bgSunken);
+        static HBRUSH br = nullptr;
+        if (!br) br = CreateSolidBrush(g_theme.c.bgSunken);
+        return (LRESULT)br;
+    }
+    case WM_MOUSEMOVE: {
+        POINT p{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        int h = -1;
+        if (PtInRect(&st->btnOk, p)) h = 0;
+        else if (PtInRect(&st->btnCancel, p)) h = 1;
+        else if (PtInRect(&st->btnBrowse, p)) h = 2;
+        if (h != st->hot) { st->hot = h; InvalidateRect(hwnd, nullptr, FALSE); }
+        return 0;
+    }
+    case WM_LBUTTONDOWN: {
+        POINT p{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        if (PtInRect(&st->btnOk, p)) st->press = 0;
+        else if (PtInRect(&st->btnCancel, p)) st->press = 1;
+        else if (PtInRect(&st->btnBrowse, p)) st->press = 2;
+        return 0;
+    }
+    case WM_LBUTTONUP: {
+        POINT p{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        int hit = -1;
+        if (PtInRect(&st->btnOk, p)) hit = 0;
+        else if (PtInRect(&st->btnCancel, p)) hit = 1;
+        else if (PtInRect(&st->btnBrowse, p)) hit = 2;
+        if (hit == st->press && hit == 2) {
+            std::wstring cur = FirstRunText(st);
+            if (PickDirDlg(hwnd, cur)) SetWindowTextW(st->edit, cur.c_str());
+        } else if (hit == st->press && hit == 0) {
+            std::wstring v = FirstRunText(st);
+            if (v.empty()) { SetFocus(st->edit); return 0; }
+            st->value = v;
+            st->ok = true;
+            st->done = true;
+        } else if (hit == st->press && hit == 1) {
+            st->done = true;
+        }
+        st->press = -1;
+        return 0;
+    }
+    case WM_KEYDOWN:
+        if (wParam == VK_ESCAPE) { st->done = true; return 0; }
+        if (wParam == VK_RETURN) {
+            std::wstring v = FirstRunText(st);
+            if (!v.empty()) { st->value = v; st->ok = true; st->done = true; }
+            return 0;
+        }
+        break;
+    case WM_CLOSE:
+        st->done = true;
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+bool ShowFirstRunDialog(HWND parent, std::wstring &outWorkspace) {
+    static bool registered = false;
+    if (!registered) {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.style = CS_HREDRAW | CS_VREDRAW;
+        wc.lpfnWndProc = FirstRunProc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        wc.lpszClassName = L"ForestCodeFirstRun";
+        RegisterClassExW(&wc);
+        registered = true;
+    }
+
+    FirstRunState st;
+    st.parent = parent;
+
+    // 默认位置：文档目录下的 ForestCode（比用户目录根更好找）
+    std::wstring docs = GetEnv(L"USERPROFILE");
+    std::wstring candidate = JoinPath(docs, L"Documents");
+    if (!IsDir(candidate)) candidate = docs;
+    st.value = JoinPath(candidate, L"ForestCode");
+
+    int W = g_theme.S(600);
+    int H = g_theme.S(330);
+    RECT pr; GetWindowRect(parent, &pr);
+    int x = pr.left + ((pr.right - pr.left) - W) / 2;
+    int y = pr.top + ((pr.bottom - pr.top) - H) / 2;
+
+    g_first = &st;
+    st.hwnd = CreateWindowExW(WS_EX_DLGMODALFRAME, L"ForestCodeFirstRun", L"欢迎使用 Forest Code",
+                              WS_POPUP | WS_CAPTION | WS_SYSMENU, x, y, W, H,
+                              parent, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!st.hwnd) { g_first = nullptr; return false; }
+    ApplyDarkTitleBar(st.hwnd);
+
+    st.edit = CreateWindowExW(0, L"EDIT", st.value.c_str(),
+                              WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+                              0, 0, 10, 10, st.hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(st.edit, WM_SETFONT, (WPARAM)g_theme.Ui(), TRUE);
+    SendMessageW(st.edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
+                 MAKELPARAM(g_theme.S(6), g_theme.S(6)));
+    SendMessageW(st.edit, EM_SETSEL, (WPARAM)-1, (LPARAM)-1);
+
+    FirstRunLayout(&st);
+
+    EnableWindow(parent, FALSE);
+    ShowWindow(st.hwnd, SW_SHOW);
+    SetForegroundWindow(st.hwnd);
+    SetFocus(st.edit);
+
+    MSG msg;
+    while (!st.done && GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        if (IsDialogMessageW(st.hwnd, &msg)) continue;
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+    EnableWindow(parent, TRUE);
+    DestroyWindow(st.hwnd);
+    g_first = nullptr;
+    SetForegroundWindow(parent);
+
+    if (!st.ok || st.value.empty()) return false;
+
+    outWorkspace = st.value;
+    MakeDirs(outWorkspace);
+    if (!IsDir(outWorkspace)) {
+        MessageBoxW(parent, L"无法创建该文件夹，请换一个位置。", L"Forest Code", MB_OK | MB_ICONERROR);
+        return false;
+    }
+    // 落盘
+    Ini ini;
+    ini.Load(Settings::SettingsPath());
+    ini.Set("workspace", W2U(outWorkspace));
+    if (ini.Get("compiler").empty()) ini.Set("compiler", W2U(Workspace::DetectCompiler()));
+    ini.Save(Settings::SettingsPath());
+    return true;
+}
+// ======================================================================
 //  选择对话框（单选列表）
 // ======================================================================
 struct ChoiceState {

@@ -303,6 +303,17 @@ bool App::Init(HINSTANCE inst) {
         SetWindowPos(hwnd_, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
     }
 
+    // ---- 首次启动：先让用户安好“家” ----
+    {
+        Ini probe;
+        std::wstring saved;
+        if (probe.Load(Settings::SettingsPath())) saved = U2W(probe.Get("workspace"));
+        if (saved.empty() || !IsDir(saved)) {
+            std::wstring chosen;
+            if (!ShowFirstRunDialog(hwnd_, chosen)) return false;   // 用户取消 -> 退出
+        }
+    }
+
     // 工作区
     ws.LoadAll();
     ws.settings.codeFont = ws.settings.codeFont.empty() ? L"Cascadia Code" : ws.settings.codeFont;
@@ -352,11 +363,7 @@ bool App::Init(HINSTANCE inst) {
     if (!opened && !ws.settings.lastFile.empty() && PathExists(ws.settings.lastFile)) {
         opened = OpenFile(ws.settings.lastFile) != nullptr;
     }
-    if (!opened) {
-        std::wstring scratch = JoinPath(ws.ScratchDir(), L"main.cpp");
-        if (!PathExists(scratch)) WriteFileUtf8(scratch, ws.DefaultTemplate());
-        OpenFile(scratch);
-    }
+
 
     Layout();
     ShowWindow(hwnd_, SW_SHOW);
@@ -649,12 +656,54 @@ void App::PaintAll(HDC dc) {
     RECT rc; GetClientRect(hwnd_, &rc);
     FillRectC(dc, rc, g_theme.c.bgRoot);
     if (rcEdit_.right > rcEdit_.left) FillRectC(dc, rcEdit_, g_theme.c.bgEditor);
+    if (!Active() && rcEdit_.right > rcEdit_.left) DrawEmptyState(dc);
     PaintTitle(dc);
     PaintToolbar(dc);
     PaintSidebar(dc);
     PaintTabs(dc);
     PaintBottom(dc);
     PaintStatus(dc);
+}
+
+// 没有打开文件时的引导页
+void App::DrawEmptyState(HDC dc) {
+    const Palette &c = g_theme.c;
+    RECT r = rcEdit_;
+    int w = g_theme.S(460);
+    int h = g_theme.S(200);
+    int cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
+    RECT card{ cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2 };
+
+    // 标记
+    RECT logo{ card.left + g_theme.S(24), card.top + g_theme.S(26),
+               card.left + g_theme.S(24) + g_theme.S(40), card.top + g_theme.S(26) + g_theme.S(40) };
+    FillRound(dc, logo, g_theme.S(10), c.accentDeep);
+    StrokeRound(dc, logo, g_theme.S(10), c.accentDim, 1);
+    {
+        RECT mk = logo;
+        int inset = g_theme.S(8);
+        mk.left += inset; mk.top += inset; mk.right -= inset; mk.bottom -= inset;
+        DrawLogoMark(dc, mk, c.accent);
+    }
+
+    RECT t1{ logo.right + g_theme.S(14), logo.top - g_theme.S(2), card.right - g_theme.S(20), logo.top + g_theme.S(22) };
+    DrawTextC(dc, L"开始写代码", t1, c.text, g_theme.UiBold());
+    RECT t2{ t1.left, t1.bottom, card.right - g_theme.S(20), t1.bottom + g_theme.S(22) };
+    DrawTextC(dc, L"点侧栏的 ＋ 一键新建题目", t2, c.textMuted, g_theme.UiSmall());
+
+    int y = logo.bottom + g_theme.S(20);
+    auto hint = [&](const wchar_t *k, const wchar_t *v) {
+        RECT kr{ card.left + g_theme.S(24), y, card.left + g_theme.S(140), y + g_theme.S(22) };
+        DrawTextC(dc, k, kr, c.accentSoft, g_theme.UiSmall());
+        RECT vr{ kr.right, y, card.right - g_theme.S(20), y + g_theme.S(22) };
+        DrawTextC(dc, v, vr, c.textFaint, g_theme.UiSmall(),
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+        y += g_theme.S(24);
+    };
+    hint(L"F11", L"编译并运行当前文件");
+    hint(L"F6", L"跑同目录下的全部 .in/.out 用例");
+    hint(L"拖拽", L"把文件从资源管理器拖到侧栏文件夹上");
+    hint(L"工作区", ws.settings.workspace.c_str());
 }
 
 void App::PaintTitle(HDC dc) {

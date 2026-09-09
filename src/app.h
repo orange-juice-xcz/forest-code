@@ -61,6 +61,9 @@ bool ShowFormDialog(HWND parent, const std::wstring &title, std::vector<FormFiel
 bool ShowChoiceDialog(HWND parent, const std::wstring &title, const std::wstring &message,
                       const std::vector<std::wstring> &choices, int &selected);
 
+// 首次启动：选择/创建工作区（Obsidian 式）
+bool ShowFirstRunDialog(HWND parent, std::wstring &outWorkspace);
+
 class App {
 public:
     static App &Get();
@@ -135,6 +138,7 @@ public:
     void PaintTabs(HDC dc);
     void PaintBottom(HDC dc);
     void PaintStatus(HDC dc);
+    void DrawEmptyState(HDC dc);
     void RebuildButtons();
     void BuildSnippets();
 

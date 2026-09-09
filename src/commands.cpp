@@ -549,6 +549,32 @@ void App::CmdAbout() {
 // ======================================================================
 void App::OnRButtonDown(POINT p) {
     if (hRename) CommitInlineRename(true);        // 正在改名时先提交
+
+    // 侧栏标题上右键：工作区相关
+    if (sideVisible && p.x >= rcSide_.left && p.x < rcSide_.right &&
+        p.y >= rcSideHead_.top && p.y < rcSideHead_.bottom) {
+        HMENU m = CreatePopupMenu();
+        auto item = [&](UINT id, const wchar_t *text) {
+            MENUITEMINFOW mii{};
+            mii.cbSize = sizeof(mii);
+            mii.fMask = MIIM_ID | MIIM_STRING | MIIM_STATE;
+            mii.wID = id;
+            mii.dwTypeData = (LPWSTR)text;
+            mii.fState = MFS_ENABLED;
+            InsertMenuItemW(m, (UINT)-1, TRUE, &mii);
+        };
+        item(3121, L"在资源管理器中打开工作区");
+        item(3122, L"切换工作区…");
+        POINT pt;
+        GetCursorPos(&pt);
+        SetForegroundWindow(hwnd_);
+        int cmd = (int)TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd_, nullptr);
+        DestroyMenu(m);
+        if (cmd == 3121) RevealPath(ws.settings.workspace);
+        else if (cmd == 3122) CmdOpenWorkspace();
+        return;
+    }
+
     int row = FsRowAt(p);
     if (row >= 0) { selFsRow = row; InvalidateRect(hwnd_, &rcSide_, FALSE); }
     ShowFsMenu(row);
