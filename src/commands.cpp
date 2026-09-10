@@ -74,6 +74,32 @@ void App::CmdEditSnippets() {
 }
 
 // ======================================================================
+//  命令面板
+// ======================================================================
+void App::CmdQuickOpen() {
+    std::wstring path;
+    int line = 0;
+    if (!ShowPalette(hwnd_, PaletteMode::QuickOpen, ws.settings.workspace, path, line)) return;
+    if (!PathExists(path)) { SetStatus(L"文件已经不在了"); RebuildFileTree(); return; }
+    if (IsDir(path)) { SetStatus(L"那是个文件夹"); return; }
+    if (OpenFile(path)) SetStatus(L"已打开 " + FileName(path));
+}
+
+void App::CmdFindInFiles() {
+    std::wstring path;
+    int line = 0;
+    if (!ShowPalette(hwnd_, PaletteMode::Search, ws.settings.workspace, path, line)) return;
+    if (!PathExists(path)) { SetStatus(L"文件已经不在了"); RebuildFileTree(); return; }
+    Doc *d = OpenFile(path);
+    if (d && line > 0) {
+        d->ed->GotoLine(line, true);
+        SetStatus(FormatW(L"%s:%d", FileName(path).c_str(), line));
+    } else {
+        SetStatus(L"已打开 " + FileName(path));
+    }
+}
+
+// ======================================================================
 //  文档
 // ======================================================================
 Doc *App::Active() {
@@ -264,6 +290,11 @@ std::wstring App::ExePathFor(const std::wstring &src) const {
 void App::RefreshDiagnostics() {
     if (!hDiag) return;
     diags = ParseDiagnostics(lastCompileLog);
+    lastErrCount = lastWarnCount = 0;
+    for (auto &g : diags) {
+        if (g.isError) ++lastErrCount;
+        else ++lastWarnCount;
+    }
     std::string text;
     if (lastCompileLog.empty()) {
         text = "还没有编译记录。按 F9 编译当前文件。\n";
@@ -280,6 +311,88 @@ void App::RefreshDiagnostics() {
             if (!g.isError) continue;
             if (FileName(g.file) == FileName(d->path)) d->ed->AddErrorMarker(g.line, g.message);
         }
+    }
+}
+
+// 编译结果 + 警告数；有编译记录时提示可以点状态栏看详情
+std::wstring App::CompileSummary(bool ok, int ms) const {
+    std::wstring s;
+    if (!ok) {
+        s = FormatW(L"编译失败：%d 个错误", lastErrCount);
+        if (lastWarnCount) s += FormatW(L"，%d 条警告", lastWarnCount);
+        if (lastErrCount == 0) s = L"编译失败";
+    } else {
+        s = FormatW(L"编译通过 (%d ms)", ms);
+        if (lastWarnCount) s += FormatW(L" · %d 条警告", lastWarnCount);
+    }
+    if (!lastCompileLog.empty()) s += L" · 点击查看编译信息";
+    return s;
+}
+
+// 「答案错误」定位：找出期望输出与实际输出第一个不同的地方
+void App::UpdateDiff() {
+    diffValid = false;
+    diffLine = 0;
+    diffExpLine.clear();
+    diffActLine.clear();
+    if (selTest < 0 || selTest >= (int)curTests.size()) return;
+    const TestCase &tc = curTests[selTest];
+    if (!tc.hasResult || tc.passed || !tc.hasExpected || tc.timeout) return;
+
+    std::string exp = ExpectedText(tc);
+    std::string act = NormOut(tc.actual);
+
+    auto lines = [](const std::string &s) {
+        std::vector<std::string> v;
+        size_t pos = 0;
+        while (pos <= s.size()) {
+            size_t e = s.find('\n', pos);
+            v.push_back(s.substr(pos, (e == std::string::npos) ? std::string::npos : e - pos));
+            if (e == std::string::npos) break;
+            pos = e + 1;
+        }
+        return v;
+    };
+    std::vector<std::string> a = lines(exp), b = lines(act);
+
+    size_t n = std::max(a.size(), b.size());
+    for (size_t i = 0; i < n; ++i) {
+        std::string x = i < a.size() ? a[i] : std::string();
+        std::string y = i < b.size() ? b[i] : std::string();
+        if (i < a.size() && i < b.size() && x == y) continue;
+        diffValid = true;
+        diffLine = (int)i + 1;
+        diffExpLine = (i < a.size()) ? x : std::string();
+        diffActLine = (i < b.size()) ? y : std::string();
+        break;
+    }
+}
+
+std::wstring App::DiffHint() const {
+    if (!diffValid) return L"";
+    auto clip = [](std::string s) {
+        if (s.size() > 40) s = s.substr(0, 40) + "...";
+        return U2W(s);
+    };
+    if (diffExpLine.empty() && !diffActLine.empty())
+        return FormatW(L"第 %d 行：期望没有这一行，实际是 \"%s\"", diffLine, clip(diffActLine).c_str());
+    if (!diffExpLine.empty() && diffActLine.empty())
+        return FormatW(L"第 %d 行：期望 \"%s\"，实际没有这一行", diffLine, clip(diffExpLine).c_str());
+    return FormatW(L"第 %d 行不同：期望 \"%s\"，实际 \"%s\"",
+                   diffLine, clip(diffExpLine).c_str(), clip(diffActLine).c_str());
+}
+
+// 把两个输出框都定位到第一个不同的那一行
+void App::PointAtDiff() {
+    if (!diffValid || diffLine <= 0) return;
+    for (HWND h : { hExp, hAct }) {
+        if (!h) continue;
+        int li = (int)SendMessageW(h, EM_LINEINDEX, (WPARAM)(diffLine - 1), 0);
+        if (li < 0) continue;
+        int len = (int)SendMessageW(h, EM_LINELENGTH, (WPARAM)li, 0);
+        if (len < 0) len = 0;
+        SendMessageW(h, EM_SETSEL, (WPARAM)li, (LPARAM)(li + len));
+        SendMessageW(h, EM_SCROLLCARET, 0, 0);
     }
 }
 
@@ -300,9 +413,11 @@ void App::RefreshRunPanel() {
     if (hOut) {
         std::string t = lastOutput;
         if (lastOutput.empty() && lastCompileLog.empty()) t = "还没有运行记录。按 F11 编译并运行。\n";
-        SetWindowTextW(hOut, ToEdit(t).c_str());
+        SetWindowTextW(hOut, ToEdit(ClipForEdit(t)).c_str());
     }
     InvalidateRect(hwnd_, &rcTestList_, FALSE);
+    UpdateDiff();
+    PointAtDiff();
 }
 
 // ======================================================================
@@ -399,7 +514,9 @@ void App::OnJobDone(RunResult *r) {
         int pass = 0, total = (int)curTests.size();
         for (auto &t : curTests) if (t.hasResult && t.passed) ++pass;
         runAllIndex = -1;
-        SetStatus(FormatW(L"全部用例完成：%d / %d 通过", pass, total));
+        if (pass == total) SetStatus(FormatW(L"全部用例完成：%d / %d 通过", pass, total));
+        else SetStatus(FormatW(L"全部用例完成：%d / %d 通过，%d 个没过（点用例看差异）",
+                               pass, total, total - pass));
         InvalidateRect(hwnd_, nullptr, FALSE);
         RebuildButtons();
         return;
@@ -407,7 +524,7 @@ void App::OnJobDone(RunResult *r) {
 
     // 编译失败
     if (res->compileRan && !res->compileOk) {
-        SetStatus(FormatW(L"编译失败 (%d ms)", (int)res->compileMs));
+        SetStatus(CompileSummary(false, (int)res->compileMs));
         bottomPage = BottomPage::Diagnostics;
         UpdateTestEditorsVisibility();
         InvalidateRect(hwnd_, nullptr, FALSE);
@@ -442,8 +559,10 @@ void App::OnJobDone(RunResult *r) {
         bottomPage = BottomPage::Tests;
         UpdateTestEditorsVisibility();
         RefreshRunPanel();
+        // RefreshRunPanel 里会重算 diff，这里把定位结果补进状态栏
+        if (diffValid) SetStatus(s + L" · " + DiffHint());
     } else if (res->compileRan) {
-        SetStatus(FormatW(L"编译通过 (%d ms)", (int)res->compileMs));
+        SetStatus(CompileSummary(true, (int)res->compileMs));
     }
 
     RebuildButtons();
@@ -485,6 +604,8 @@ void App::LoadTestToEditors(int index) {
         SetWindowTextW(hExp, ToEdit(tc.outText).c_str());
     }
     SetWindowTextW(hAct, ToEdit(ClipForEdit(tc.actual)).c_str());
+    UpdateDiff();
+    PointAtDiff();
 }
 
 void App::SaveEditorsToTest() {
@@ -685,6 +806,8 @@ void App::OnRButtonDown(POINT p) {
         item(3121, L"在资源管理器中打开工作区");
         item(3122, L"切换工作区…");
         item(3123, L"编辑代码片段 (snippets.ini)");
+        item(3124, L"快速打开文件…    Ctrl+O");
+        item(3125, L"在工作区中搜索…  Ctrl+Shift+F");
         POINT pt;
         GetCursorPos(&pt);
         SetForegroundWindow(hwnd_);
@@ -693,6 +816,8 @@ void App::OnRButtonDown(POINT p) {
         if (cmd == 3121) RevealPath(ws.settings.workspace);
         else if (cmd == 3122) CmdOpenWorkspace();
         else if (cmd == 3123) CmdEditSnippets();
+        else if (cmd == 3124) CmdQuickOpen();
+        else if (cmd == 3125) CmdFindInFiles();
         return;
     }
 
@@ -804,6 +929,16 @@ void App::OnMouseLeave() {
 }
 
 void App::OnLButtonDown(POINT p) {
+    // 状态栏：点一下跳到「编译信息」（状态文字里已经提示了）
+    if (Hit(rcStatus_, p) && !lastCompileLog.empty() && p.x < rcStatus_.left + g_theme.S(600)) {
+        bottomVisible = true;
+        bottomPage = BottomPage::Diagnostics;
+        Layout();
+        UpdateTestEditorsVisibility();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
+
     // 底部标签必须最先处理：它们也在 buttons 里，否则会被下面的通用按钮逻辑吃掉
     for (auto &b : buttons) {
         if (b.id >= 910 && b.id <= 912 && b.visible && Hit(b.rc, p)) {
@@ -940,6 +1075,9 @@ void App::OnKeyDown(WPARAM key) {
     case 'N': if (ctrl) CmdNewProblem(); break;
     case 'B': if (ctrl) CmdTogglePanel(); break;
     case 'T': if (ctrl && shift) CmdAddTest(); break;
+    case 'O': if (ctrl) CmdQuickOpen(); break;
+    case 'P': if (ctrl) CmdQuickOpen(); break;
+    case 'F': if (ctrl && shift) CmdFindInFiles(); break;
     case VK_OEM_PLUS:  if (ctrl) CmdZoom(1); break;
     case VK_OEM_MINUS: if (ctrl) CmdZoom(-1); break;
     case VK_ADD: if (ctrl) CmdZoom(1); break;

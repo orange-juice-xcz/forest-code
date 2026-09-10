@@ -402,7 +402,7 @@ bool IsAppShortcut(WPARAM key) {
     bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
     if (ctrl) {
         switch (key) {
-        case 'S': case 'N': case 'B': case 'T': case VK_TAB:
+        case 'S': case 'N': case 'B': case 'T': case 'O': case 'P': case 'F': case VK_TAB:
         case VK_OEM_PLUS: case VK_OEM_MINUS: case VK_ADD: case VK_SUBTRACT:
             return true;
         }

@@ -1089,7 +1089,16 @@ void App::PaintBottom(HDC dc) {
         };
         label(RECT{ rcIn_.left, rcIn_.top - labelH, rcIn_.right, rcIn_.top }, L"输入 (stdin)", c.textMuted);
         label(RECT{ rcExp_.left, rcExp_.top - labelH, rcExp_.right, rcExp_.top }, L"期望输出", c.textMuted);
-        label(RECT{ rcAct_.left, rcAct_.top - labelH, rcAct_.right, rcAct_.top }, L"实际输出", c.textMuted);
+        // 答案错误时把第一个不同点直接标在标题上，不用自己一行行对
+        std::wstring actLabel = L"实际输出";
+        COLORREF actCol = c.textMuted;
+        if (diffValid) {
+            actLabel += L"   ·   " + DiffHint();
+            actCol = c.error;
+        }
+        DrawTextC(dc, actLabel, RECT{ rcAct_.left, rcAct_.top - labelH, rcAct_.right, rcAct_.top },
+                  actCol, g_theme.UiSmall(),
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
     }
 }
 

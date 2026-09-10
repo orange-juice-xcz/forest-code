@@ -62,6 +62,11 @@ bool ShowFormDialog(HWND parent, const std::wstring &title, std::vector<FormFiel
 // 首次启动：选择/创建工作区（Obsidian 式）
 bool ShowFirstRunDialog(HWND parent, std::wstring &outWorkspace);
 
+// 命令面板：快速跳文件 / 全文搜索
+enum class PaletteMode { QuickOpen, Search };
+bool ShowPalette(HWND parent, PaletteMode mode, const std::wstring &workspace,
+                 std::wstring &outPath, int &outLine);
+
 class App {
 public:
     static App &Get();
@@ -128,6 +133,17 @@ public:
     std::wstring statusText = L"就绪";
     std::wstring statusRight;
     int  lastCompileMs = 0;
+    int  lastErrCount = 0;
+    int  lastWarnCount = 0;
+
+    // 最近一次"答案错误"的第一个不同点（用来定位到那一行）
+    bool diffValid = false;
+    int  diffLine = 0;
+    std::string diffExpLine, diffActLine;
+    void UpdateDiff();
+    void PointAtDiff();
+    std::wstring DiffHint() const;
+    std::wstring CompileSummary(bool ok, int ms) const;
 
     // ---- 功能 ----
     void Layout();
@@ -187,6 +203,8 @@ public:
     void CmdCopyOutput();
     void CmdTogglePanel();
     void CmdEditSnippets();
+    void CmdQuickOpen();
+    void CmdFindInFiles();
     void CmdAbout();
 
     // 侧栏右键菜单

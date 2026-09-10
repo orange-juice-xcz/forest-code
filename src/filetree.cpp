@@ -363,6 +363,8 @@ void App::OnFsMenuCommand(int id) {
         else RevealPath(path);
         break;
     case 3111: if (!path.empty()) OpenFile(path); break;
+    case 3124: CmdQuickOpen(); break;
+    case 3125: CmdFindInFiles(); break;
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
 }

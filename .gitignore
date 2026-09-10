@@ -12,6 +12,7 @@ third_party/
 *.png
 !preview.png
 !preview-completion.png
+!preview-search.png
 
 # 编辑器 / 系统
 .vs/
