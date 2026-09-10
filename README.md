@@ -4,6 +4,18 @@
 
 ![Forest Code](preview.png)
 
+## 下载
+
+**➡ [下载 forest-code.exe](https://github.com/orange-juice-xcz/forest-code/releases/latest)**（约 2.4 MB）
+
+- **就一个 exe，双击就跑**，不用安装、不用解压、不写注册表
+- 静态链接，**不依赖任何运行时**（没有 .NET / WebView2 / Electron / Python）
+- 想连示例工作区一起拿：[Releases 里的 zip 包](https://github.com/orange-juice-xcz/forest-code/releases/latest)
+- 需要你自己有一个 **g++**（MinGW-w64 即可，Dev-C++ 自带的也行）；第一次启动会自动在常见路径里找
+
+> Windows 可能提示"已保护你的电脑"——这是我自费做的个人项目，没买代码签名证书。
+> 点「更多信息」→「仍要运行」即可；不放心就 clone 下来自己 `powershell -File build.ps1`。
+
 ---
 
 ## 为什么会有它
