@@ -35,8 +35,13 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     case WM_TIMER:
         if (wParam == 7) {
             KillTimer(hwnd, 7);
-            app.ws.RescanProblems();
-            app.RebuildFileTree();
+            if (app.treeDirty_) {
+                app.treeDirty_ = false;
+                app.RebuildFileTree();
+                app.ScanTestsForActive();
+                app.LoadTestToEditors(app.selTest);
+                app.RefreshRunPanel();
+            }
         }
         return 0;
 
@@ -148,14 +153,25 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     case WM_MOUSEWHEEL: {
         POINT p{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         ScreenToClient(hwnd, &p);
-        int delta = GET_WHEEL_DELTA_WPARAM(wParam);
-        if (p.x < app.sideWidth && app.sideVisible && p.y > app.rcSide_.top) {
-            app.sideScroll -= delta / WHEEL_DELTA * g_theme.S(48);
+        int delta = GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA;
+        // 热区必须用真实的客户区矩形：sideWidth 是逻辑像素，高 DPI 下会只有半条侧栏能滚
+        if (app.sideVisible && p.x >= app.rcSide_.left && p.x < app.rcSide_.right &&
+            p.y >= app.rcSide_.top && p.y < app.rcSide_.bottom) {
+            int content = g_theme.S(4) + (int)app.fsRows.size() * g_theme.S(28);
+            int visible = app.rcSide_.bottom - app.rcSideHead_.bottom;
+            int maxScroll = content > visible ? content - visible : 0;
+            app.sideScroll -= delta * g_theme.S(48);
             if (app.sideScroll < 0) app.sideScroll = 0;
+            if (app.sideScroll > maxScroll) app.sideScroll = maxScroll;
             InvalidateRect(hwnd, &app.rcSide_, FALSE);
-        } else if (PtInRect(&app.rcTestList_, p)) {
-            app.testScroll -= delta / WHEEL_DELTA * g_theme.S(40);
+        } else if (app.bottomVisible && app.bottomPage == BottomPage::Tests &&
+                   PtInRect(&app.rcTestList_, p)) {
+            int content = g_theme.S(6) + ((int)app.curTests.size() + 1) * g_theme.S(34);
+            int visible = app.rcTestList_.bottom - app.rcTestList_.top;
+            int maxScroll = content > visible ? content - visible : 0;
+            app.testScroll -= delta * g_theme.S(40);
             if (app.testScroll < 0) app.testScroll = 0;
+            if (app.testScroll > maxScroll) app.testScroll = maxScroll;
             InvalidateRect(hwnd, &app.rcTestList_, FALSE);
         }
         return 0;
@@ -206,7 +222,19 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     }
 
     case WM_CLOSE:
-        app.CmdSaveAll();
+        // 退出前问一次：有未保存的修改就让用户决定，不要默默全存
+        {
+            int dirty = 0;
+            for (auto &d : app.docs) if (d->ed && d->ed->Modified()) ++dirty;
+            if (dirty > 0) {
+                std::wstring msg = FormatW(L"有 %d 个文件还没保存，要保存后退出吗？", dirty);
+                int r = MessageBoxW(hwnd, msg.c_str(), L"Forest Code",
+                                    MB_YESNOCANCEL | MB_ICONQUESTION);
+                if (r == IDCANCEL) return 0;
+                if (r == IDYES) app.CmdSaveAll();
+            }
+            if (app.jobRunning) app.runner.Kill();
+        }
         DestroyWindow(hwnd);
         return 0;
 
@@ -893,7 +921,6 @@ void App::PaintTabs(HDC dc) {
     DrawHLine(dc, rcTab_.left, rcTab_.right, rcTab_.bottom - 1, c.border);
 
     int x = rcTab_.left + g_theme.S(6);
-    int h = rcTab_.bottom - rcTab_.top;
     HDC mdc = dc;
     SelectObject(mdc, g_theme.Ui());
 

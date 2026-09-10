@@ -68,6 +68,12 @@ void App::RebuildFileTree() {
         ScanDirInto(ws.settings.workspace, 0);
     if (selFsRow >= (int)fsRows.size()) selFsRow = (int)fsRows.size() - 1;
     if (hotFsRow >= (int)fsRows.size()) hotFsRow = -1;
+    // 树变短了就把滚动位置拉回来，否则会滚成一片空白
+    int content = g_theme.S(4) + (int)fsRows.size() * g_theme.S(28);
+    int visible = rcSide_.bottom - rcSideHead_.bottom;
+    int maxScroll = content > visible ? content - visible : 0;
+    if (sideScroll > maxScroll) sideScroll = maxScroll;
+    if (sideScroll < 0) sideScroll = 0;
     InvalidateRect(hwnd_, &rcSide_, FALSE);
 }
 
@@ -431,10 +437,29 @@ static DWORD WINAPI DirWatchThread(LPVOID param) {
 }
 
 void App::StartDirWatch() {
-    if (dirWatch_) return;
+    if (watchThread_) return;
     watchStop_ = false;
     HANDLE t = CreateThread(nullptr, 0, DirWatchThread, this, 0, nullptr);
-    if (t) CloseHandle(t);
+    if (t) watchThread_ = t;
+}
+
+// 停止监听。ReadDirectoryChangesW 是同步阻塞调用，光置标志位它不会醒，
+// 必须用 CancelSynchronousIo 把那次调用打断。
+void App::StopDirWatch() {
+    if (!watchThread_) return;
+    watchStop_ = true;
+    CancelSynchronousIo(watchThread_);
+    WaitForSingleObject(watchThread_, 1000);
+    CloseHandle(watchThread_);
+    watchThread_ = nullptr;
+    dirWatch_ = nullptr;
+}
+
+// 换工作区后必须重开：原来的线程还盯着旧目录的句柄，
+// 新工作区在资源管理器里的增删改永远不会刷新侧栏。
+void App::RestartDirWatch() {
+    StopDirWatch();
+    StartDirWatch();
 }
 
 // ======================================================================
@@ -458,8 +483,13 @@ void App::ScanTestsForActive() {
         tc.inPath = JoinPath(dir, n);
         tc.outPath = JoinPath(dir, FileStem(n) + L".out");
         tc.hasExpected = PathExists(tc.outPath);
-        ReadFileUtf8(tc.inPath, tc.inText);
-        if (tc.hasExpected) ReadFileUtf8(tc.outPath, tc.outText);
+        // 大文件只记路径，不读进内存：读进来还会被灌进 EDIT 控件，界面直接卡死
+        tc.inTooBig = (FileSize(tc.inPath) > kInlineTestLimit);
+        if (!tc.inTooBig) ReadFileUtf8(tc.inPath, tc.inText);
+        if (tc.hasExpected) {
+            tc.outTooBig = (FileSize(tc.outPath) > kInlineTestLimit);
+            if (!tc.outTooBig) ReadFileUtf8(tc.outPath, tc.outText);
+        }
         for (auto &o : old) {
             if (o.inPath == tc.inPath) {
                 tc.hasResult = o.hasResult; tc.passed = o.passed; tc.timeout = o.timeout;

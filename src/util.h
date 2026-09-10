@@ -28,6 +28,7 @@ std::wstring FileStem(const std::wstring &p);
 std::wstring FileExt(const std::wstring &p);      // 含点，小写
 bool PathExists(const std::wstring &p);
 bool IsDir(const std::wstring &p);
+long long FileSize(const std::wstring &p);        // 字节数，失败返回 -1
 bool MakeDirs(const std::wstring &p);
 std::vector<std::wstring> ListDir(const std::wstring &dir);   // 仅名字，已排序
 std::wstring ExeDir();

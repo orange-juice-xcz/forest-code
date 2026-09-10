@@ -7,25 +7,17 @@
 namespace fc {
 
 // ---------- 管道工具 ----------
-static void DrainPipe(HANDLE h, std::string &out, bool *closed = nullptr) {
+// 只读"当前可用"的数据，永远不阻塞。
+// 子进程完全可能把管道写端复制给孙进程（fork/exec），那种情况下 ReadFile 会一直等下去。
+static void DrainPipe(HANDLE h, std::string &out) {
     if (h == INVALID_HANDLE_VALUE || !h) return;
-    DWORD avail = 0;
-    while (PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr) && avail > 0) {
+    for (;;) {
+        DWORD avail = 0;
+        if (!PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr) || avail == 0) return;
         char buf[8192];
         DWORD got = 0;
         DWORD want = avail > sizeof(buf) ? (DWORD)sizeof(buf) : avail;
-        if (!ReadFile(h, buf, want, &got, nullptr) || got == 0) break;
-        out.append(buf, got);
-    }
-    if (closed) *closed = false;
-}
-
-static void ReadPipeToEnd(HANDLE h, std::string &out) {
-    if (!h || h == INVALID_HANDLE_VALUE) return;
-    for (;;) {
-        char buf[8192];
-        DWORD got = 0;
-        if (!ReadFile(h, buf, sizeof(buf), &got, nullptr) || got == 0) break;
+        if (!ReadFile(h, buf, want, &got, nullptr) || got == 0) return;
         out.append(buf, got);
     }
 }
@@ -36,6 +28,17 @@ static std::wstring QuoteArg(const std::wstring &a) {
     for (wchar_t ch : a) { if (ch == L'"') r += L'\\'; r += ch; }
     r += L"\"";
     return r;
+}
+
+// 把标准输入落成一个临时文件：管道同步写会在子进程不读时永久阻塞，
+// 而竞赛题的输入动辄几 MB（1e6 个整数 ≈ 7MB），一旦卡住整个 IDE 就只能重启。
+static std::wstring MakeTempStdinFile(const std::string &data) {
+    wchar_t dir[MAX_PATH]{};
+    if (!GetTempPathW(MAX_PATH, dir)) return {};
+    wchar_t name[MAX_PATH]{};
+    if (!GetTempFileNameW(dir, L"fci", 0, name)) return {};
+    if (!WriteFileBytes(name, data)) { DeleteFileW(name); return {}; }
+    return name;
 }
 
 // ---------- 配置 ----------
@@ -61,6 +64,7 @@ struct JobThreadData {
     Runner *self = nullptr;
     HWND notify = nullptr;
     std::wstring src, exe;
+    std::wstring stdinFile;
     std::string stdinText;
     int token = 0;
     bool compile = true;
@@ -82,18 +86,40 @@ static HANDLE MakeJob(int memLimitMb) {
 }
 
 static void RunProcess(const std::wstring &cmdLine, const std::wstring &workDir,
-                       const std::string *stdinText, std::string &out, std::string &err,
+                       const std::wstring &stdinFile, const std::string *stdinText,
+                       std::string &out, std::string &err,
                        int &exitCode, bool &timedOut, double &elapsedMs,
                        int timeLimitMs, HANDLE job) {
     SECURITY_ATTRIBUTES sa{ sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE };
     HANDLE outR = nullptr, outW = nullptr, errR = nullptr, errW = nullptr;
-    HANDLE inR = nullptr, inW = nullptr;
     CreatePipe(&outR, &outW, &sa, 0);
     CreatePipe(&errR, &errW, &sa, 0);
-    CreatePipe(&inR, &inW, &sa, 0);
     SetHandleInformation(outR, HANDLE_FLAG_INHERIT, 0);
     SetHandleInformation(errR, HANDLE_FLAG_INHERIT, 0);
-    SetHandleInformation(inW, HANDLE_FLAG_INHERIT, 0);
+
+    // ---- 标准输入 ----
+    // 优先直接用 .in 文件本身：既不复制几 MB 的数据，也不存在"写管道阻塞"的死锁。
+    std::wstring stdinPath;
+    HANDLE inH = INVALID_HANDLE_VALUE;
+    if (!stdinFile.empty() && PathExists(stdinFile)) {
+        inH = CreateFileW(stdinFile.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                          &sa, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    }
+    if (inH == INVALID_HANDLE_VALUE && stdinText && !stdinText->empty()) {
+        stdinPath = MakeTempStdinFile(*stdinText);
+        if (!stdinPath.empty())
+            inH = CreateFileW(stdinPath.c_str(), GENERIC_READ, FILE_SHARE_READ, &sa,
+                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    }
+    if (inH == INVALID_HANDLE_VALUE) {
+        // 没有输入（或文件读不出来）：给一个立刻 EOF 的管道读端。
+        // 写端在这里就关掉，既不会阻塞，也不会泄漏句柄。
+        HANDLE r = nullptr, w = nullptr;
+        if (CreatePipe(&r, &w, &sa, 0)) {
+            CloseHandle(w);
+            inH = r;
+        }
+    }
 
     STARTUPINFOW si{};
     si.cb = sizeof(si);
@@ -101,16 +127,18 @@ static void RunProcess(const std::wstring &cmdLine, const std::wstring &workDir,
     si.wShowWindow = SW_HIDE;
     si.hStdOutput = outW;
     si.hStdError = errW;
-    si.hStdInput = inR;
+    si.hStdInput = (inH == INVALID_HANDLE_VALUE) ? nullptr : inH;
 
     PROCESS_INFORMATION pi{};
     std::wstring cmd = cmdLine;
     BOOL ok = CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, TRUE,
                              CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr,
                              workDir.empty() ? nullptr : workDir.c_str(), &si, &pi);
+    if (inH != INVALID_HANDLE_VALUE) CloseHandle(inH);
+    if (!stdinPath.empty()) DeleteFileW(stdinPath.c_str());
+
     if (!ok) {
         CloseHandle(outR); CloseHandle(outW); CloseHandle(errR); CloseHandle(errW);
-        CloseHandle(inR); CloseHandle(inW);
         exitCode = -1;
         err += "无法启动进程: " + W2U(cmdLine) + "\n";
         return;
@@ -119,14 +147,6 @@ static void RunProcess(const std::wstring &cmdLine, const std::wstring &workDir,
     if (job) AssignProcessToJobObject(job, pi.hProcess);
     ResumeThread(pi.hThread);
     CloseHandle(pi.hThread);
-
-    // 写 stdin
-    if (stdinText && !stdinText->empty()) {
-        DWORD wrote = 0;
-        WriteFile(inW, stdinText->data(), (DWORD)stdinText->size(), &wrote, nullptr);
-    }
-    CloseHandle(inW);
-    inW = nullptr;
 
     double t0 = NowMs();
     DWORD deadline = (DWORD)(timeLimitMs > 0 ? timeLimitMs : INFINITE);
@@ -147,10 +167,10 @@ static void RunProcess(const std::wstring &cmdLine, const std::wstring &workDir,
     elapsedMs = NowMs() - t0;
 
     CloseHandle(outW); CloseHandle(errW);
-    ReadPipeToEnd(outR, out);
-    ReadPipeToEnd(errR, err);
+    // 进程已退出，缓冲区里的数据仍然可读；这里只做非阻塞收尾
+    DrainPipe(outR, out);
+    DrainPipe(errR, err);
     CloseHandle(outR); CloseHandle(errR);
-    if (inW) CloseHandle(inW);
 
     DWORD code = 0;
     GetExitCodeProcess(pi.hProcess, &code);
@@ -167,6 +187,7 @@ static DWORD WINAPI JobThread(LPVOID param) {
     r->exePath = d->exe;
 
     std::wstring workDir = ParentDir(d->src);
+    HANDLE curJob = nullptr;
 
     if (d->compile) {
         r->compileRan = true;
@@ -175,12 +196,15 @@ static DWORD WINAPI JobThread(LPVOID param) {
         int code = 0;
         std::string cmd = W2U(d->self->CommandLine(d->src, d->exe));
         DeleteFileSafe(d->exe);   // 避免旧产物导致误判编译成功
-        HANDLE job = MakeJob(0);
+        curJob = MakeJob(0);
+        d->self->SetJob(curJob);
         std::string so;
-        RunProcess(d->self->CommandLine(d->src, d->exe), workDir, nullptr,
-                   so, r->compileLog, code, to, ms, 60000, job);
+        RunProcess(d->self->CommandLine(d->src, d->exe), workDir, L"", nullptr,
+                   so, r->compileLog, code, to, ms, 60000, curJob);
+        d->self->SetJob(nullptr);
+        if (curJob) CloseHandle(curJob);
+        curJob = nullptr;
         if (!so.empty()) r->compileLog = so + r->compileLog;
-        if (job) CloseHandle(job);
         r->compileMs = ms;
         r->compileOk = (code == 0) && PathExists(d->exe);
         if (!r->compileOk && r->compileLog.empty())
@@ -189,30 +213,37 @@ static DWORD WINAPI JobThread(LPVOID param) {
 
     if (d->runAfter && (!d->compile || r->compileOk)) {
         r->ran = true;
-        HANDLE job = MakeJob(0);
-        RunProcess(QuoteArg(d->exe), workDir, &d->stdinText, r->out, r->err,
-                   r->exitCode, r->timeout, r->runMs, d->timeLimitMs, job);
-        if (job) CloseHandle(job);
+        curJob = MakeJob(0);
+        d->self->SetJob(curJob);
+        RunProcess(QuoteArg(d->exe), workDir, d->stdinFile, &d->stdinText, r->out, r->err,
+                   r->exitCode, r->timeout, r->runMs, d->timeLimitMs, curJob);
+        d->self->SetJob(nullptr);
+        if (curJob) CloseHandle(curJob);
     }
 
+    // 先解除"忙"，再投递结果。
+    // 反过来的话，UI 线程收到消息后立刻接力发起下一个用例时 busy_ 还是 true，
+    // RunOnly 会直接 return，逐用例链静默断掉，界面永远停在"正在忙…"。
+    d->self->SetBusy(false);
     if (d->notify) PostMessageW(d->notify, WM_FC_JOB_DONE, 0, (LPARAM)r);
     else delete r;
 
-    d->self->SetBusy(false);
     delete d;
     return 0;
 }
 
 // ---------- 对外接口 ----------
-void Runner::Start(HWND notify, const std::wstring &src, const std::wstring &exe,
-                   const std::string &stdinText, int token, bool runAfter) {
-    if (busy_) return;
+bool Runner::Start(HWND notify, const std::wstring &src, const std::wstring &exe,
+                   const std::wstring &stdinFile, const std::string &stdinText,
+                   int token, bool runAfter) {
+    if (busy_) return false;
     busy_ = true;
     JobThreadData *d = new JobThreadData();
     d->self = this;
     d->notify = notify;
     d->src = src;
     d->exe = exe;
+    d->stdinFile = stdinFile;
     d->stdinText = stdinText;
     d->token = token;
     d->compile = true;
@@ -220,18 +251,20 @@ void Runner::Start(HWND notify, const std::wstring &src, const std::wstring &exe
     d->timeLimitMs = timeLimitMs_;
     HANDLE h = CreateThread(nullptr, 0, JobThread, d, 0, nullptr);
     if (h) CloseHandle(h);
-    else { busy_ = false; delete d; }
+    else { busy_ = false; delete d; return false; }
+    return true;
 }
 
-void Runner::RunOnly(HWND notify, const std::wstring &exe, const std::string &stdinText,
-                     const std::wstring &src, int token) {
-    if (busy_) return;
+bool Runner::RunOnly(HWND notify, const std::wstring &exe, const std::wstring &stdinFile,
+                     const std::string &stdinText, const std::wstring &src, int token) {
+    if (busy_) return false;
     busy_ = true;
     JobThreadData *d = new JobThreadData();
     d->self = this;
     d->notify = notify;
     d->src = src;
     d->exe = exe;
+    d->stdinFile = stdinFile;
     d->stdinText = stdinText;
     d->token = token;
     d->compile = false;
@@ -239,11 +272,15 @@ void Runner::RunOnly(HWND notify, const std::wstring &exe, const std::string &st
     d->timeLimitMs = timeLimitMs_;
     HANDLE h = CreateThread(nullptr, 0, JobThread, d, 0, nullptr);
     if (h) CloseHandle(h);
-    else { busy_ = false; delete d; }
+    else { busy_ = false; delete d; return false; }
+    return true;
 }
 
+// 真杀掉当前作业（连同它启动的整棵进程树）。
+// 作业线程自己会走完收尾流程，所以这里不动 busy_。
 void Runner::Kill() {
-    busy_ = false;
+    HANDLE j = (HANDLE)InterlockedExchangePointer((PVOID volatile *)&job_, nullptr);
+    if (j) TerminateJobObject(j, 1);
 }
 
 } // namespace fc

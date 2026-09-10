@@ -94,7 +94,7 @@ public:
     FontCfg f;
 
     void Init(HWND hwnd);            // 取 DPI、建字体
-    void SetDpi(UINT dpi);           // 重建字体
+    void SetDpi(UINT dpi, bool force = false);   // 重建字体；改了字号要 force
     UINT Dpi() const { return dpi_; }
 
     // 缩放

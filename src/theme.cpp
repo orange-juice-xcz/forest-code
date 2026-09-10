@@ -49,9 +49,10 @@ void Theme::DestroyFonts() {
     fUi_ = fUiBold_ = fUiSmall_ = fUiSmallBold_ = fIcon_ = fIconSmall_ = fMono_ = nullptr;
 }
 
-void Theme::SetDpi(UINT dpi) {
+void Theme::SetDpi(UINT dpi, bool force) {
     if (dpi < 72) dpi = 96;
-    if (dpi_ == dpi && fUi_) return;
+    // force: 设置里改了字体/字号时 DPI 没变，但字体必须重建，否则要重启才生效
+    if (dpi_ == dpi && fUi_ && !force) return;
     dpi_ = dpi;
     DestroyFonts();
     fUi_        = MakeFont(f.ui,    f.uiSize,    dpi, FW_NORMAL);

@@ -1,4 +1,4 @@
-// Forest Code - 工作区 / 题目 / 设置
+// Forest Code - 工作区 / 设置
 #pragma once
 #include <windows.h>
 #include <string>
@@ -9,11 +9,19 @@
 namespace fc {
 
 // ---------------- 数据结构 ----------------
+// 约定式模型：没有"题目对象"，一个文件夹就是一个题目，
+// X.in + X.out 同目录即成对用例，多个 .cpp 就是多解。
+//
+// 超过这个尺寸的用例不往下方输入框里塞：几 MB 文本灌进 EDIT 控件会把界面卡死。
+// 运行时不必进内存 —— 直接把 .in 文件本身当子进程的标准输入。
+const long long kInlineTestLimit = 256 * 1024;
+
 struct TestCase {
     std::wstring inPath, outPath;
     std::string inText, outText;
     bool hasExpected = false;
-    bool enabled = true;
+    bool inTooBig = false;        // 文件过大，没有载入 inText
+    bool outTooBig = false;
     // 最近一次运行结果
     bool hasResult = false;
     bool passed = false;
@@ -22,29 +30,6 @@ struct TestCase {
     int exitCode = 0;
     std::string actual;
     std::string stderrText;
-};
-
-struct Solution {
-    std::wstring path;
-    std::wstring name;
-};
-
-struct Problem {
-    std::wstring dir;
-    std::wstring title;
-    std::wstring source;
-    std::wstring difficulty;
-    std::wstring tags;
-    std::wstring statementPath;
-    std::vector<Solution> solutions;
-    std::vector<TestCase> tests;
-    bool expanded = false;        // 侧栏展开状态
-    bool testsExpanded = false;
-
-    std::wstring DisplayTitle() const {
-        if (!title.empty()) return title;
-        return FileName(dir);
-    }
 };
 
 struct Settings {
@@ -74,32 +59,12 @@ struct Settings {
 class Workspace {
 public:
     Settings settings;
-    std::vector<Problem> problems;
 
-    bool LoadAll();                              // 载入设置 + 扫描题目
-    bool RescanProblems();
-    std::wstring ProblemsDir() const;
-    std::wstring ScratchDir() const;
-    std::wstring BuildDir() const;
-
-    Problem *Find(const std::wstring &dir);
-    Problem *FindByFile(const std::wstring &file);
-
-    // 新建
-    Problem *CreateProblem(const std::wstring &title, const std::wstring &source,
-                           const std::wstring &difficulty, const std::wstring &tags,
-                           const std::wstring &templateCode, bool withTemplate);
-    Solution *CreateSolution(Problem *p, const std::wstring &name, const std::wstring &code);
-    TestCase *AddTest(Problem *p);
-    bool SaveTest(const Problem &p, int index);
-    bool DeleteTest(Problem *p, int index);
-    bool DeleteSolution(Problem *p, const std::wstring &path);
-    void ReloadProblem(Problem *p);
-    bool RenameProblem(Problem *p, const std::wstring &newTitle);
+    void LoadAll();                              // 载入设置 + 建好工作区/产物目录
+    std::wstring BuildDir() const;               // <工作区>\.build
 
     static std::wstring DetectCompiler();
     static std::vector<Snippet> BuiltinSnippets();
-    static std::string DefaultTemplate();
 };
 
 // 解析编译错误：file:line:col: error: msg

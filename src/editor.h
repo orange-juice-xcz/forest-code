@@ -18,6 +18,9 @@ struct Snippet {
 
 enum class Lang { Cpp, Markdown, Plain };
 
+// 按扩展名选词法器：.md 就是 Markdown，不要拿 C++ 规则去高亮题面
+Lang LangForPath(const std::wstring &path);
+
 class Editor {
 public:
     bool Create(HWND parent, int id);
@@ -39,16 +42,17 @@ public:
     void GotoLine(int line, bool center = true);
     void RefreshStyles();
 
+    // 显示
+    void SetViewWhitespace(bool on);
+
     // 补全
     void SetSnippets(std::vector<Snippet> sn) { snippets_ = std::move(sn); }
-    void SetExtraWords(const std::vector<std::string> &words) { extraWords_ = words; }
     void TriggerCompletion(bool force = false);
     void RebuildKeywordList();
 
     // 标记
     void ClearMarkers();
     void AddErrorMarker(int line, const std::string &msg);
-    void SetBookmark(int line, bool on);
 
     // 状态
     int CurrentLine() const;      // 1-based
@@ -59,8 +63,6 @@ public:
 
     // 回调
     std::function<void()> onUpdateUi;
-    std::function<void(int /*line*/)> onDoubleClickLine;
-    std::function<void()> onSaveRequest;
 
     static LRESULT CALLBACK SubclassProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
     void HandleNotify(SCNotification *n);   // Scintilla 通知发给父窗口，由主窗口转发过来
@@ -70,13 +72,20 @@ private:
     Lang lang_ = Lang::Cpp;
     std::wstring fontFace_ = L"Cascadia Code";
     int fontSize_ = 11;
+    bool showWs_ = false;
     std::vector<Snippet> snippets_;
-    std::vector<std::string> extraWords_;
 
+    // 文档词表缓存：大文件每敲一个字符全量重扫会明显卡顿
+    std::vector<std::string> docWords_;
+    bool docWordsDirty_ = true;
+    double docWordsBuiltAt_ = 0;
 
-    void CollectDocWords(std::vector<std::string> &out) const;
+    const std::vector<std::string> &DocWords();
     void ShowCompletionList(const std::string &prefix, bool force);
-    bool TryExpandSnippet(const std::string &text);
+    const Snippet *FindSnippet(const std::string &trigger) const;
+    // 用片段正文替换 [startPos, 光标) 区间；返回是否真的展开了
+    bool TryExpandSnippet(const std::string &trigger, int startPos);
+    bool ExpandSnippetAtCaret();     // Tab 触发：光标前的词正好是触发词
     void HandleCharAdded(int ch);
 };
 

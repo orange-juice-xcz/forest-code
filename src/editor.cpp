@@ -18,6 +18,14 @@ extern const Lexilla::LexerModule lmMarkdown;
 
 namespace fc {
 
+Lang LangForPath(const std::wstring &path) {
+    std::wstring e = FileExt(path);
+    if (e == L".cpp" || e == L".cc" || e == L".cxx" || e == L".c" ||
+        e == L".h" || e == L".hpp" || e == L".hxx") return Lang::Cpp;
+    if (e == L".md" || e == L".markdown") return Lang::Markdown;
+    return Lang::Plain;
+}
+
 // Scintilla 消息助手（默认参数，少写两个 0）
 static inline LRESULT Sci(HWND h, UINT m, WPARAM w = 0, LPARAM l = 0) {
     return SendMessageW(h, m, w, l);
@@ -193,6 +201,8 @@ void Editor::ApplyTheme() {
     Sci(hwnd_, SCI_SETEDGEMODE, EDGE_NONE);
     Sci(hwnd_, SCI_SETWRAPMODE, SC_WRAP_NONE);
     Sci(hwnd_, SCI_SETZOOM, 0);
+    // 空白符
+    Sci(hwnd_, SCI_SETVIEWWS, showWs_ ? SCWS_VISIBLEALWAYS : SCWS_INVISIBLE, 0);
     // 错误标记
     Sci(hwnd_, SCI_MARKERDEFINE, 24, SC_MARK_BACKGROUND);
     Sci(hwnd_, SCI_MARKERSETBACK, 24, RGB(0x3A, 0x14, 0x16));
@@ -222,6 +232,11 @@ void Editor::SetCodeFont(const std::wstring &face, int pt) {
     fontSize_ = pt;
     ApplyTheme();
     RefreshStyles();
+}
+
+void Editor::SetViewWhitespace(bool on) {
+    showWs_ = on;
+    Sci(hwnd_, SCI_SETVIEWWS, on ? SCWS_VISIBLEALWAYS : SCWS_INVISIBLE, 0);
 }
 
 void Editor::SetLang(Lang lang) {
@@ -261,6 +276,7 @@ std::string Editor::GetText() const {
 
 void Editor::SetText(const std::string &utf8) {
     Sci(hwnd_, SCI_SETTEXT, 0, (LPARAM)utf8.c_str());
+    docWordsDirty_ = true;
 }
 
 bool Editor::Load(const std::wstring &path) {
@@ -331,22 +347,25 @@ void Editor::AddErrorMarker(int line, const std::string &) {
     Sci(hwnd_, SCI_MARKERADD, l, 26);
 }
 
-void Editor::SetBookmark(int line, bool on) {
-    int l = std::max(1, line) - 1;
-    if (on) Sci(hwnd_, SCI_MARKERADD, l, 25);
-    else Sci(hwnd_, SCI_MARKERDELETE, l, 25);
-}
-
 // ---------- 补全 ----------
 static bool IsIdentChar(int ch) {
     return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_';
 }
 
-void Editor::CollectDocWords(std::vector<std::string> &out) const {
+// 文档词表：缓存起来，只有文档真的被改动过才重扫。
+// 大文件（>=256KB）再加一层时间节流，避免每敲一个字符就全量扫描。
+const std::vector<std::string> &Editor::DocWords() {
+    if (!docWordsDirty_) return docWords_;
     int len = (int)Sci(hwnd_, SCI_GETLENGTH, 0, 0);
-    if (len <= 0 || len > 4 * 1024 * 1024) return;
+    if (len < 0) len = 0;
+    double now = NowMs();
+    if (len >= 256 * 1024 && now - docWordsBuiltAt_ < 400.0) return docWords_;
+    docWordsBuiltAt_ = now;
+    docWordsDirty_ = false;
+    docWords_.clear();
+    if (len <= 0 || len > 4 * 1024 * 1024) return docWords_;
     const char *buf = (const char *)Sci(hwnd_, SCI_GETCHARACTERPOINTER, 0, 0);
-    if (!buf) return;
+    if (!buf) return docWords_;
     std::set<std::string> uniq;
     int i = 0;
     while (i < len) {
@@ -359,7 +378,8 @@ void Editor::CollectDocWords(std::vector<std::string> &out) const {
             ++i;
         }
     }
-    out.assign(uniq.begin(), uniq.end());
+    docWords_.assign(uniq.begin(), uniq.end());
+    return docWords_;
 }
 
 void Editor::TriggerCompletion(bool force) {
@@ -383,11 +403,14 @@ void Editor::ShowCompletionList(const std::string &prefix, bool force) {
     for (auto &w : Split(kKeywords, ' ')) if (!w.empty()) set.insert(w);
     for (auto &w : Split(kTypes, ' ')) if (!w.empty()) set.insert(w);
     for (auto &w : Split(kFunctions, ' ')) if (!w.empty()) set.insert(w);
-    for (auto &w : extraWords_) if (!w.empty()) set.insert(w);
     for (auto &s : snippets_) if (!s.trigger.empty()) set.insert(s.trigger);
-    std::vector<std::string> docWords;
-    CollectDocWords(docWords);
-    for (auto &w : docWords) set.insert(w);
+    // 文档词表里不能留"正在输入的这个词"：它和前缀完全相等，按前缀选中时又总排在
+    // 真正的候选（whil 之于 while）前面，于是补全列表一直选中自己 ——
+    // 回车后什么都没变，看起来就是"补全没反应"。
+    for (auto &w : DocWords()) {
+        if (w.empty() || w == prefix) continue;
+        set.insert(w);
+    }
 
     std::string list;
     size_t n = 0;
@@ -407,26 +430,58 @@ void Editor::ShowCompletionList(const std::string &prefix, bool force) {
     Sci(hwnd_, SCI_AUTOCSHOW, prefix.size(), (LPARAM)list.c_str());
 }
 
-bool Editor::TryExpandSnippet(const std::string &text) {
-    for (auto &s : snippets_) {
-        if (s.trigger == text && !s.body.empty()) {
-            int pos = (int)Sci(hwnd_, SCI_GETCURRENTPOS, 0, 0);
-            int start = pos - (int)text.size();
-            // 删除已输入的触发词
-            Sci(hwnd_, SCI_SETTARGETSTART, start, 0);
-            Sci(hwnd_, SCI_SETTARGETEND, pos, 0);
-            Sci(hwnd_, SCI_REPLACETARGET, (WPARAM)-1, (LPARAM)s.body.c_str());
-            int newPos = start + (int)s.body.size();
-            Sci(hwnd_, SCI_GOTOPOS, newPos, 0);
-            // 光标停在第一个 $0 处
-            size_t z = s.body.find("$0");
-            if (z != std::string::npos) {
-                Sci(hwnd_, SCI_GOTOPOS, start + (int)z, 0);
-            }
-            return true;
-        }
+const Snippet *Editor::FindSnippet(const std::string &trigger) const {
+    for (auto &s : snippets_)
+        if (s.trigger == trigger && !s.body.empty()) return &s;
+    return nullptr;
+}
+
+bool Editor::TryExpandSnippet(const std::string &trigger, int startPos) {
+    const Snippet *s = FindSnippet(trigger);
+    if (!s) return false;
+
+    int pos = (int)Sci(hwnd_, SCI_GETCURRENTPOS, 0, 0);
+    int start = startPos;
+    if (start < 0 || start > pos) start = (int)Sci(hwnd_, SCI_WORDSTARTPOSITION, pos, TRUE);
+    if (start < 0 || start > pos || start == pos) return false;
+
+    // $0 不是内容，是"展开后光标停哪"的占位符，必须先剔掉
+    std::string body = s->body;
+    size_t caretOff = std::string::npos;
+    size_t z = body.find("$0");
+    if (z != std::string::npos) {
+        caretOff = z;
+        body.erase(z, 2);
     }
-    return false;
+
+    Sci(hwnd_, SCI_BEGINUNDOACTION, 0, 0);
+    Sci(hwnd_, SCI_SETTARGETSTART, start, 0);
+    Sci(hwnd_, SCI_SETTARGETEND, pos, 0);
+    Sci(hwnd_, SCI_REPLACETARGET, (WPARAM)-1, (LPARAM)body.c_str());
+    int newPos = start + (int)(caretOff == std::string::npos ? body.size() : caretOff);
+    Sci(hwnd_, SCI_GOTOPOS, newPos, 0);
+    Sci(hwnd_, SCI_SCROLLCARET, 0, 0);
+    Sci(hwnd_, SCI_ENDUNDOACTION, 0, 0);
+    return true;
+}
+
+// Tab 触发：光标前正好是一个片段触发词时展开（经典 snippet 手感）
+bool Editor::ExpandSnippetAtCaret() {
+    if (lang_ != Lang::Cpp) return false;
+    if (!Sci(hwnd_, SCI_GETSELECTIONEMPTY, 0, 0)) return false;
+    int pos = (int)Sci(hwnd_, SCI_GETCURRENTPOS, 0, 0);
+    int start = (int)Sci(hwnd_, SCI_WORDSTARTPOSITION, pos, TRUE);
+    if (pos <= start) return false;
+    std::string word;
+    word.assign((size_t)(pos - start), '\0');
+    Sci_TextRange tr{};
+    tr.chrg.cpMin = start; tr.chrg.cpMax = pos;
+    tr.lpstrText = &word[0];
+    Sci(hwnd_, SCI_GETTEXTRANGE, 0, (LPARAM)&tr);
+    if (!FindSnippet(word)) return false;
+    if (!TryExpandSnippet(word, start)) return false;
+    Sci(hwnd_, SCI_AUTOCCANCEL, 0, 0);
+    return true;
 }
 
 void Editor::HandleCharAdded(int ch) {
@@ -460,21 +515,19 @@ void Editor::HandleNotify(SCNotification *n) {
     case SCN_UPDATEUI:
         if (onUpdateUi) onUpdateUi();
         break;
+    case SCN_MODIFIED:
+        if (n->modificationType & (SC_MOD_INSERTTEXT | SC_MOD_DELETETEXT)) docWordsDirty_ = true;
+        break;
     case SCN_AUTOCSELECTION: {
-        // 若选中的正好是片段触发词，则展开片段
-        if (n->text) TryExpandSnippet(n->text);
+        // 选中的正好是片段触发词：
+        //  1) 先 SCI_AUTOCCANCEL —— Scintilla 在通知返回后会检查 ac.Active()，
+        //     不取消的话它会把我们刚展开的片段再覆盖回触发词（还会吃掉后面的代码）；
+        //  2) 用通知里的 position（触发词起点）做替换，不能用 pos - text.size()，
+        //     因为列表项（forj）通常比已输入的前缀（fo）长。
+        if (n->text && TryExpandSnippet(n->text, (int)n->position))
+            Sci(hwnd_, SCI_AUTOCCANCEL, 0, 0);
         break;
     }
-    case SCN_DOUBLECLICK:
-        if (onDoubleClickLine) {
-            int line = (int)Sci(hwnd_, SCI_LINEFROMPOSITION, n->position, 0) + 1;
-            onDoubleClickLine(line);
-        }
-        break;
-    case SCN_SAVEPOINTREACHED:
-    case SCN_SAVEPOINTLEFT:
-        if (onUpdateUi) onUpdateUi();
-        break;
     case SCN_MARGINCLICK:
         if (n->margin == 1) {
             int line = (int)Sci(hwnd_, SCI_LINEFROMPOSITION, n->position, 0);
@@ -495,13 +548,15 @@ LRESULT CALLBACK Editor::SubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         if (n && self) self->HandleNotify(n);
         break;
     }
-    case WM_COMMAND:
-        if (self && self->onSaveRequest && LOWORD(wParam) == 0) self->onSaveRequest();
-        break;
     case WM_KEYDOWN:
         if (wParam == VK_SPACE && (GetKeyState(VK_CONTROL) & 0x8000)) {
             if (self) self->TriggerCompletion(true);
             return 0;
+        }
+        // 片段：触发词 + Tab（补全列表开着时 Tab 是"选中"语义，不要抢）
+        if (wParam == VK_TAB && self && !(GetKeyState(VK_CONTROL) & 0x8000) &&
+            !(GetKeyState(VK_SHIFT) & 0x8000) && !Sci(hwnd, SCI_AUTOCACTIVE, 0, 0)) {
+            if (self->ExpandSnippetAtCaret()) return 0;
         }
         // 全局快捷键转发给主窗口（编辑器有焦点时 F5/F9/F11/Ctrl+S 等仍要生效）
         if (IsAppShortcut(wParam)) {

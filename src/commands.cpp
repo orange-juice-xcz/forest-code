@@ -13,18 +13,38 @@ namespace fc {
 // ======================================================================
 //  片段 / 侧栏
 // ======================================================================
+// snippets.ini 是逐行解析的，正文里的换行只能写成 \n —— 这里还原转义
+static std::string UnescapeSnippet(const std::string &s) {
+    std::string o;
+    o.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '\\' && i + 1 < s.size()) {
+            char c = s[++i];
+            if (c == 'n') o += '\n';
+            else if (c == 't') o += '\t';
+            else if (c == '\\') o += '\\';
+            else { o += '\\'; o += c; }
+        } else {
+            o += s[i];
+        }
+    }
+    return o;
+}
+
+static std::wstring SnippetsPath() { return JoinPath(AppDataDir(), L"snippets.ini"); }
+
 void App::BuildSnippets() {
     std::vector<Snippet> sn = Workspace::BuiltinSnippets();
     // 追加用户片段
     Ini ini;
-    if (ini.Load(JoinPath(AppDataDir(), L"snippets.ini"))) {
+    if (ini.Load(SnippetsPath())) {
         for (int i = 1; i <= 200; ++i) {
             std::string key = Format("snippet%d", i);
             std::string trig = ini.Get(key + ".trigger");
             if (trig.empty()) continue;
             Snippet s;
             s.trigger = trig;
-            s.body = ini.Get(key + ".body");
+            s.body = UnescapeSnippet(ini.Get(key + ".body"));
             s.desc = ini.Get(key + ".desc");
             s.builtin = false;
             sn.push_back(s);
@@ -32,6 +52,25 @@ void App::BuildSnippets() {
     }
     for (auto &d : docs) if (d->ed) d->ed->SetSnippets(sn);
     snippets_ = sn;
+}
+
+// 片段以前只能手改 ini，没有任何入口。给出模板并直接在编辑器里打开。
+void App::CmdEditSnippets() {
+    std::wstring path = SnippetsPath();
+    if (!PathExists(path)) {
+        WriteFileUtf8(path,
+            "# Forest Code 自定义代码片段\n"
+            "# 每条片段三行：trigger（触发词）/ body（展开内容）/ desc（说明）\n"
+            "# body 里的换行写成 \\n，缩进写成 \\t；$0 是展开后光标停的位置。\n"
+            "# 保存后立刻生效：在编辑器里敲触发词，从补全列表里选中，或按 Tab 展开。\n"
+            "#\n"
+            "# 例：\n"
+            "# snippet1.trigger=mint\n"
+            "# snippet1.body=const long long MOD = 998244353;\\n\n"
+            "# snippet1.desc=模数\n");
+    }
+    OpenFile(path);
+    SetStatus(L"编辑后保存即可生效");
 }
 
 // ======================================================================
@@ -54,7 +93,8 @@ Doc *App::OpenFile(const std::wstring &path, bool statement) {
     d->ed = std::make_unique<Editor>();
     if (!d->ed->Create(hwnd_, 500 + (int)docs.size())) return nullptr;
     d->ed->SetCodeFont(ws.settings.codeFont, ws.settings.codeSize);
-    d->ed->SetLang(statement ? (FileExt(path) == L".md" ? Lang::Markdown : Lang::Plain) : Lang::Cpp);
+    d->ed->SetLang(LangForPath(path));
+    d->ed->SetViewWhitespace(ws.settings.showWhitespace);
     d->ed->SetSnippets(snippets_);
     // 先给编辑器真实尺寸，避免 10x10 视口导致滚动位置错乱
     Layout();
@@ -135,6 +175,11 @@ bool App::SaveDoc(Doc *d) {
         return false;
     }
     InvalidateRect(hwnd_, &rcTab_, FALSE);
+    if (d->path == SnippetsPath()) {   // 改完片段立刻生效，不用重启
+        BuildSnippets();
+        SetStatus(L"代码片段已重新载入");
+        return true;
+    }
     SetStatus(L"已保存 " + FileName(d->path));
     return true;
 }
@@ -154,8 +199,66 @@ void App::SetStatus(const std::wstring &s) {
     InvalidateRect(hwnd_, &rcStatus_, FALSE);
 }
 
+// 编译产物名必须把完整源路径算进去。
+// 约定式模型下每个题目里的代码都叫 代码01.cpp，只按文件名命名的话所有题共用
+// .build\代码01.exe —— 在 A 题编译过之后切到 B 题按 F5，跑的是 A 的程序配 B 的输入，
+// 判出来的 AC/WA 全是假的。
+static std::wstring ExeNameFor(const std::wstring &src) {
+    std::wstring lower = src;
+    for (auto &ch : lower) ch = (wchar_t)towlower(ch);
+    unsigned int h = 2166136261u;                      // FNV-1a 32
+    for (wchar_t ch : lower) {
+        h = (h ^ (unsigned int)(ch & 0xFF)) * 16777619u;
+        h = (h ^ (unsigned int)((ch >> 8) & 0xFF)) * 16777619u;
+    }
+    wchar_t buf[16]{};
+    swprintf(buf, 16, L"%08x", h);
+    std::wstring stem = FileStem(src);
+    if (stem.empty()) stem = L"a";
+    return stem + L"_" + buf + L".exe";
+}
+
+// a 比 b 新（用于判断产物是否过期）
+static bool FileNewer(const std::wstring &a, const std::wstring &b) {
+    WIN32_FILE_ATTRIBUTE_DATA fa{}, fb{};
+    if (!GetFileAttributesExW(a.c_str(), GetFileExInfoStandard, &fa)) return false;
+    if (!GetFileAttributesExW(b.c_str(), GetFileExInfoStandard, &fb)) return true;
+    return CompareFileTime(&fa.ftLastWriteTime, &fb.ftLastWriteTime) > 0;
+}
+
+// 输出比对：统一换行、忽略行尾空白
+static std::string NormOut(std::string s) {
+    std::string o;
+    o.reserve(s.size());
+    for (char c : s) if (c != '\r') o += c;
+    while (!o.empty() && (o.back() == '\n' || o.back() == ' ')) o.pop_back();
+    return o;
+}
+
+// 期望输出：用例文件太大时正文不在内存里，比对时再从磁盘读一次
+static std::string ExpectedText(const TestCase &tc) {
+    if (!tc.outTooBig) return NormOut(tc.outText);
+    std::string s;
+    ReadFileUtf8(tc.outPath, s);
+    return NormOut(s);
+}
+
+// 往 EDIT 控件里塞文本前先截断：几 MB 会直接卡死界面
+static std::string ClipForEdit(const std::string &s, size_t limit = 200 * 1024) {
+    if (s.size() <= limit) return s;
+    std::string o = s.substr(0, limit);
+    o += Format("\n\n[... 共 %.1f KB，只显示前 %d KB ...]\n",
+                s.size() / 1024.0, (int)(limit / 1024));
+    return o;
+}
+
+static void SetEditRO(HWND h, bool ro) {
+    if (h) SendMessageW(h, EM_SETREADONLY, ro ? TRUE : FALSE, 0);
+}
+
 std::wstring App::ExePathFor(const std::wstring &src) const {
-    return JoinPath(ws.BuildDir(), FileStem(src) + L".exe");
+    if (src.empty()) return JoinPath(ws.BuildDir(), L"a.exe");
+    return JoinPath(ws.BuildDir(), ExeNameFor(src));
 }
 
 void App::RefreshDiagnostics() {
@@ -183,13 +286,13 @@ void App::RefreshDiagnostics() {
 void App::RefreshRunPanel() {
     if (hAct) {
         std::string t;
-        if (Doc *d = Active()) {
+        if (Active()) {
             if (selTest >= 0 && selTest < (int)curTests.size()) {
                 TestCase &tc = curTests[selTest];
-                t = tc.actual;
-                if (!tc.stderrText.empty()) t += "\n[stderr]\n" + tc.stderrText;
+                t = ClipForEdit(tc.actual);
+                if (!tc.stderrText.empty()) t += "\n[stderr]\n" + ClipForEdit(tc.stderrText, 32 * 1024);
             } else {
-                t = lastOutput;
+                t = ClipForEdit(lastOutput);
             }
         } else t = lastOutput;
         SetWindowTextW(hAct, ToEdit(t).c_str());
@@ -205,7 +308,7 @@ void App::RefreshRunPanel() {
 // ======================================================================
 //  运行
 // ======================================================================
-void App::StartJob(bool compile, bool run, const std::string &stdinText, int token) {
+void App::StartJob(bool compile, bool run, const std::wstring &stdinFile, int token) {
     Doc *d = Active();
     if (!d) { SetStatus(L"没有打开的文件"); return; }
     if (d->statement) { SetStatus(L"题面文件不能编译"); return; }
@@ -221,7 +324,11 @@ void App::StartJob(bool compile, bool run, const std::string &stdinText, int tok
     std::wstring exe = ExePathFor(d->path);
     runner.Configure(ws.settings.compiler, ws.settings.stdFlag, ws.settings.compileFlags,
                      ws.settings.timeLimitMs);
-    runner.Start(hwnd_, d->path, exe, stdinText, token, run);
+    if (!runner.Start(hwnd_, d->path, exe, stdinFile, "", token, run)) {
+        jobRunning = false;
+        SetStatus(L"运行器忙，请稍后再试");
+        RebuildButtons();
+    }
 }
 
 void App::OnJobDone(RunResult *r) {
@@ -234,18 +341,23 @@ void App::OnJobDone(RunResult *r) {
         RefreshDiagnostics();
     }
 
-    // 全部用例：先编译
+    // 全部用例：先编译（token 101），成功后逐个跑（token 100）。
+    // 后续每一步都用编译结果里带回来的源文件路径，不再依赖"当前活动文档"——
+    // 运行途中关掉标签页也不会空指针或跑错文件。
     if (res->token == 101) {
-        if (!res->compileOk) { runAllIndex = -1; RebuildButtons(); InvalidateRect(hwnd_, nullptr, FALSE); return; }
-        Doc *d = Active();
-        if (!curTests.empty()) {
-            runAllIndex = 0;
-            runner.RunOnly(hwnd_, ExePathFor(d->path), curTests[0].inText, d->path, 100);
-            SetStatus(FormatW(L"测试 1 / %d …", (int)curTests.size()));
-        } else {
-            runAllIndex = -1;
-            jobRunning = false;
+        runAllIndex = -1;
+        if (!res->compileOk || curTests.empty()) {
+            if (res->compileOk) SetStatus(L"当前目录没有 .in/.out 测试用例");
+            RebuildButtons();
+            InvalidateRect(hwnd_, nullptr, FALSE);
+            return;
         }
+        runAllSrc = res->sourceFile;
+        runAllIndex = 0;
+        SetStatus(FormatW(L"测试 1 / %d …", (int)curTests.size()));
+        jobRunning = runner.RunOnly(hwnd_, ExePathFor(runAllSrc), curTests[0].inPath, "",
+                                   runAllSrc, 100);
+        if (!jobRunning) SetStatus(L"运行器忙，已中断");
         RebuildButtons();
         InvalidateRect(hwnd_, nullptr, FALSE);
         return;
@@ -253,7 +365,6 @@ void App::OnJobDone(RunResult *r) {
 
     // 全部用例模式
     if (res->token == 100) {
-        Doc *d = Active();
         if (runAllIndex >= 0 && runAllIndex < (int)curTests.size()) {
             TestCase &tc = curTests[runAllIndex];
             tc.hasResult = true;
@@ -265,13 +376,7 @@ void App::OnJobDone(RunResult *r) {
             tc.passed = false;
             if (!res->timeout) {
                 if (tc.hasExpected) {
-                    auto norm = [](std::string s) {
-                        std::string o;
-                        for (char c : s) if (c != '\r') o += c;
-                        while (!o.empty() && (o.back() == '\n' || o.back() == ' ')) o.pop_back();
-                        return o;
-                    };
-                    tc.passed = (norm(tc.actual) == norm(tc.outText));
+                    tc.passed = (NormOut(tc.actual) == ExpectedText(tc));
                 } else {
                     tc.passed = (res->exitCode == 0);
                 }
@@ -283,8 +388,11 @@ void App::OnJobDone(RunResult *r) {
         int next = runAllIndex + 1;
         if (next < (int)curTests.size()) {
             runAllIndex = next;
-            runner.RunOnly(hwnd_, ExePathFor(d->path), curTests[next].inText, d->path, 100);
             SetStatus(FormatW(L"测试 %d / %d …", next + 1, (int)curTests.size()));
+            jobRunning = runner.RunOnly(hwnd_, ExePathFor(runAllSrc), curTests[next].inPath,
+                                       "", runAllSrc, 100);
+            if (!jobRunning) SetStatus(L"运行器忙，已中断");
+            InvalidateRect(hwnd_, nullptr, FALSE);
             return;
         }
         // 汇总
@@ -309,7 +417,6 @@ void App::OnJobDone(RunResult *r) {
 
     if (res->ran) {
         lastOutput = res->out;
-        Doc *d = Active();
         if (selTest >= 0 && selTest < (int)curTests.size()) {
             TestCase &tc = curTests[selTest];
             tc.hasResult = true;
@@ -320,15 +427,8 @@ void App::OnJobDone(RunResult *r) {
             tc.ms = res->runMs;
             tc.passed = false;
             if (!res->timeout) {
-                if (tc.hasExpected) {
-                    auto norm = [](std::string s) {
-                        std::string o;
-                        for (char c : s) if (c != '\r') o += c;
-                        while (!o.empty() && (o.back() == '\n' || o.back() == ' ')) o.pop_back();
-                        return o;
-                    };
-                    tc.passed = (norm(tc.actual) == norm(tc.outText));
-                } else tc.passed = (res->exitCode == 0);
+                if (tc.hasExpected) tc.passed = (NormOut(tc.actual) == ExpectedText(tc));
+                else tc.passed = (res->exitCode == 0);
             }
         }
         std::wstring s;
@@ -355,7 +455,6 @@ void App::OnJobDone(RunResult *r) {
 // ======================================================================
 void App::LoadTestToEditors(int index) {
     if (!hIn) return;
-    Doc *d = Active();
     if (index < 0 || index >= (int)curTests.size()) {
         SetWindowTextW(hIn, L"");
         SetWindowTextW(hExp, L"");
@@ -363,16 +462,33 @@ void App::LoadTestToEditors(int index) {
         return;
     }
     TestCase &tc = curTests[index];
-    ReadFileUtf8(tc.inPath, tc.inText);
-    if (tc.hasExpected) ReadFileUtf8(tc.outPath, tc.outText);
-    SetWindowTextW(hIn, ToEdit(tc.inText).c_str());
-    SetWindowTextW(hExp, ToEdit(tc.outText).c_str());
-    SetWindowTextW(hAct, ToEdit(tc.actual).c_str());
+    if (tc.inTooBig) {
+        tc.inText.clear();
+        SetWindowTextW(hIn, FormatW(L"[%s 共 %.1f MB，太大，不在下面显示]\n[运行时会完整喂给程序]",
+                                    FileName(tc.inPath).c_str(),
+                                    FileSize(tc.inPath) / 1024.0 / 1024.0).c_str());
+        SetEditRO(hIn, true);
+    } else {
+        ReadFileUtf8(tc.inPath, tc.inText);
+        SetEditRO(hIn, false);
+        SetWindowTextW(hIn, ToEdit(tc.inText).c_str());
+    }
+    if (tc.outTooBig) {
+        tc.outText.clear();
+        SetWindowTextW(hExp, FormatW(L"[%s 共 %.1f MB，太大，不在下面显示]",
+                                     FileName(tc.outPath).c_str(),
+                                     FileSize(tc.outPath) / 1024.0 / 1024.0).c_str());
+        SetEditRO(hExp, true);
+    } else {
+        if (tc.hasExpected) ReadFileUtf8(tc.outPath, tc.outText);
+        SetEditRO(hExp, false);
+        SetWindowTextW(hExp, ToEdit(tc.outText).c_str());
+    }
+    SetWindowTextW(hAct, ToEdit(ClipForEdit(tc.actual)).c_str());
 }
 
 void App::SaveEditorsToTest() {
     if (!hIn) return;
-    Doc *d = Active();
     if (selTest < 0 || selTest >= (int)curTests.size()) return;
     TestCase &tc = curTests[selTest];
 
@@ -382,9 +498,12 @@ void App::SaveEditorsToTest() {
         if (n) GetWindowTextW(h, &w[0], n + 1);
         return FromEdit(w);
     };
+    // 太大没载入的字段不能回写：输入框里放的是提示文字，写回去就把用例毁了
+    if (tc.inTooBig) return;
     tc.inText = getText(hIn);
-    tc.outText = getText(hExp);
     WriteFileUtf8(tc.inPath, tc.inText);
+    if (tc.outTooBig) return;
+    tc.outText = getText(hExp);
     WriteFileUtf8(tc.outPath, tc.outText);
     tc.hasExpected = !tc.outText.empty();
 }
@@ -440,35 +559,42 @@ void App::CmdDeleteTest() {
 // ======================================================================
 void App::CmdCompile() {
     if (jobRunning) { SetStatus(L"正在忙…"); return; }
-    StartJob(true, false, "", 1);
+    StartJob(true, false, L"", 1);
 }
 
 void App::CmdRun() {
     if (jobRunning) { SetStatus(L"正在忙…"); return; }
-    SaveEditorsToTest();
-    std::wstring stdinText;
     Doc *d = Active();
-    if (selTest >= 0 && selTest < (int)curTests.size()) stdinText = U2W(curTests[selTest].inText);
-    std::wstring exe = ExePathFor(d ? d->path : L"");
-    if (!PathExists(exe)) { CmdCompileRun(); return; }
+    if (!d) { SetStatus(L"没有打开的文件"); return; }
+    if (d->statement) { SetStatus(L"题面文件不能运行"); return; }
+    SaveEditorsToTest();
+    std::wstring stdinFile;
+    if (selTest >= 0 && selTest < (int)curTests.size()) stdinFile = curTests[selTest].inPath;
+    std::wstring exe = ExePathFor(d->path);
+    // 产物不存在、或者源码比产物还新 —— 直接跑等于跑上一版程序，必须重编
+    if (!PathExists(exe) || FileNewer(d->path, exe) || d->ed->Modified()) { CmdCompileRun(); return; }
     jobRunning = true; jobToken = 2;
     SetStatus(L"正在运行…");
     RebuildButtons();
-    runner.RunOnly(hwnd_, exe, W2U(stdinText), d->path, 2);
+    runner.Configure(ws.settings.compiler, ws.settings.stdFlag, ws.settings.compileFlags,
+                     ws.settings.timeLimitMs);
+    if (!runner.RunOnly(hwnd_, exe, stdinFile, "", d->path, 2)) {
+        jobRunning = false;
+        SetStatus(L"运行器忙，请稍后再试");
+        RebuildButtons();
+    }
 }
 
 void App::CmdCompileRun() {
     if (jobRunning) { SetStatus(L"正在忙…"); return; }
     SaveEditorsToTest();
-    std::wstring stdinText;
-    Doc *d = Active();
-    if (selTest >= 0 && selTest < (int)curTests.size()) stdinText = U2W(curTests[selTest].inText);
-    StartJob(true, true, W2U(stdinText), 3);
+    std::wstring stdinFile;
+    if (selTest >= 0 && selTest < (int)curTests.size()) stdinFile = curTests[selTest].inPath;
+    StartJob(true, true, stdinFile, 3);
 }
 
 void App::CmdRunAllTests() {
     if (jobRunning) return;
-    Doc *d = Active();
     ScanTestsForActive();
     if (curTests.empty()) { SetStatus(L"当前目录没有 .in/.out 测试用例"); return; }
     SaveEditorsToTest();
@@ -478,7 +604,7 @@ void App::CmdRunAllTests() {
     SetStatus(L"正在编译…");
     RebuildButtons();
     // 先编译，成功后逐个跑
-    StartJob(true, false, "", 101);
+    StartJob(true, false, L"", 101);
 }
 
 void App::CmdSettings() { ShowSettingsDialog(); }
@@ -497,6 +623,7 @@ void App::CmdOpenWorkspace() {
     ws.settings.workspace = path;
     ws.settings.Save();
     ws.LoadAll();
+    RestartDirWatch();          // 监听必须跟着换到新目录
     RebuildFileTree();
     InvalidateRect(hwnd_, nullptr, TRUE);
     SetStatus(L"工作区已切换到 " + std::wstring(path));
@@ -509,16 +636,8 @@ void App::CmdZoom(int delta) {
     }
 }
 
-void App::CmdShowWhitespace(bool on) {
-    ws.settings.showWhitespace = on;
-    for (auto &d : docs) {
-        SendMessageW(d->ed->Hwnd(), 2021 /*SCI_SETVIEWWS*/, on ? 1 : 0, 0);
-    }
-    InvalidateRect(hwnd_, nullptr, FALSE);
-}
-
 void App::CmdCopyOutput() {
-    if (Doc *d = Active()) {
+    if (Active()) {
         if (selTest >= 0 && selTest < (int)curTests.size()) {
             CopyTextToClipboard(hwnd_, U2W(curTests[selTest].actual));
             SetStatus(L"已复制实际输出");
@@ -565,6 +684,7 @@ void App::OnRButtonDown(POINT p) {
         };
         item(3121, L"在资源管理器中打开工作区");
         item(3122, L"切换工作区…");
+        item(3123, L"编辑代码片段 (snippets.ini)");
         POINT pt;
         GetCursorPos(&pt);
         SetForegroundWindow(hwnd_);
@@ -572,6 +692,7 @@ void App::OnRButtonDown(POINT p) {
         DestroyMenu(m);
         if (cmd == 3121) RevealPath(ws.settings.workspace);
         else if (cmd == 3122) CmdOpenWorkspace();
+        else if (cmd == 3123) CmdEditSnippets();
         return;
     }
 
@@ -786,7 +907,7 @@ void App::OnLButtonUp(POINT p) {
             case 7: CmdAbout(); break;
             case 8: CmdRunAllTests(); break;
             case 20: CmdNewProblem(); break;
-            case 21: ws.RescanProblems(); RebuildFileTree(); SetStatus(L"已刷新"); break;
+            case 21: RebuildFileTree(); SetStatus(L"已刷新"); break;
             }
         }
         InvalidateRect(hwnd_, nullptr, FALSE);

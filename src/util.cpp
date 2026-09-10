@@ -159,6 +159,12 @@ bool IsDir(const std::wstring &p) {
     return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
 }
 
+long long FileSize(const std::wstring &p) {
+    WIN32_FILE_ATTRIBUTE_DATA fad{};
+    if (!GetFileAttributesExW(p.c_str(), GetFileExInfoStandard, &fad)) return -1;
+    return ((long long)fad.nFileSizeHigh << 32) | (long long)fad.nFileSizeLow;
+}
+
 bool MakeDirs(const std::wstring &p) {
     if (p.empty() || IsDir(p)) return true;
     std::wstring parent = ParentDir(p);
@@ -388,13 +394,15 @@ std::string FromEdit(const std::wstring &w) {
 
 bool IsAppShortcut(WPARAM key) {
     switch (key) {
-    case VK_F1: case VK_F5: case VK_F6: case VK_F9: case VK_F11:
+    case VK_F1: case VK_F2: case VK_F5: case VK_F6: case VK_F9: case VK_F11:
         return true;
     }
+    // 注意：故意不转发 Delete —— 编辑器里按 Delete 是删字符，
+    // 转发出去会变成"删掉侧栏选中的文件"，这个后果太严重。
     bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
     if (ctrl) {
         switch (key) {
-        case 'S': case 'N': case 'B': case VK_TAB:
+        case 'S': case 'N': case 'B': case 'T': case VK_TAB:
         case VK_OEM_PLUS: case VK_OEM_MINUS: case VK_ADD: case VK_SUBTRACT:
             return true;
         }

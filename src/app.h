@@ -58,8 +58,6 @@ struct FormField {
     int browse = 0;      // 0=无 1=选文件 2=选目录
 };
 bool ShowFormDialog(HWND parent, const std::wstring &title, std::vector<FormField> &fields);
-bool ShowChoiceDialog(HWND parent, const std::wstring &title, const std::wstring &message,
-                      const std::vector<std::wstring> &choices, int &selected);
 
 // 首次启动：选择/创建工作区（Obsidian 式）
 bool ShowFirstRunDialog(HWND parent, std::wstring &outWorkspace);
@@ -104,6 +102,7 @@ public:
     HWND hRename = nullptr;      // 就地重命名用的输入框
     int renameRow = -1;
     HANDLE dirWatch_ = nullptr;  // 目录监听句柄
+    HANDLE watchThread_ = nullptr;
     volatile bool watchStop_ = false;
     bool treeDirty_ = false;
 
@@ -121,6 +120,7 @@ public:
     bool jobRunning = false;
     int jobToken = 0;
     int runAllIndex = -1;
+    std::wstring runAllSrc;        // “全部用例”链当前在跑哪个源文件（不依赖活动标签）
     std::string lastCompileLog;
     std::string lastOutput;
     std::vector<DiagItem> diags;
@@ -157,6 +157,8 @@ public:
     void OnFsMenuCommand(int id);
     void OnDropFiles(POINT clientPt, HDROP hd);
     void StartDirWatch();
+    void StopDirWatch();
+    void RestartDirWatch();       // 换工作区后必须重开，否则监听还盯着旧目录
     void OnDirChanged();
     void RevealPath(const std::wstring &path);
 
@@ -180,18 +182,18 @@ public:
     void CmdSettings();
     void CmdOpenWorkspace();
     void CmdZoom(int delta);
-    void CmdShowWhitespace(bool on);
     void CmdDeleteTest();
     void CmdAddTest();
     void CmdCopyOutput();
     void CmdTogglePanel();
+    void CmdEditSnippets();
     void CmdAbout();
 
     // 侧栏右键菜单
     void OnRButtonDown(POINT p);
 
     // 运行
-    void StartJob(bool compile, bool run, const std::string &stdinText, int token);
+    void StartJob(bool compile, bool run, const std::wstring &stdinFile, int token);
     void OnJobDone(RunResult *r);
     void SetStatus(const std::wstring &s);
     void RefreshRunPanel();
@@ -218,7 +220,6 @@ public:
 
     // 对话框
     void ShowSettingsDialog();
-    void ShowNewProblemDialog();
 
     HINSTANCE inst_ = nullptr;
     HWND hwnd_ = nullptr;
