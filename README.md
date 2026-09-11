@@ -8,6 +8,9 @@
 
 **➡ [下载 forest-code.exe](https://github.com/orange-juice-xcz/forest-code/releases/latest)**（约 2.4 MB）
 
+> ### ⚠️ 仅支持 Windows 10 / 11 (x64)
+> 这是纯 Win32 写的原生程序，**macOS / Linux 用不了，目前也没有移植计划**（原因见文末「关于跨平台」）。
+
 - **就一个 exe，双击就跑**，不用安装、不用解压、不写注册表
 - 静态链接，**不依赖任何运行时**（没有 .NET / WebView2 / Electron / Python）
 - 想连示例工作区一起拿：[Releases 里的 zip 包](https://github.com/orange-juice-xcz/forest-code/releases/latest)
@@ -220,6 +223,38 @@ powershell -File tools\make_icon.ps1 -Preview   # 顺便输出尺寸预览图
 - **无外部依赖**：不依赖 .NET / WebView2 / Electron / Python
 
 配色以深绿 `#0A150F` 为底、薄荷绿 `#4ED17E` 为强调色，长时间盯屏幕不刺眼。
+
+---
+
+## 关于跨平台（macOS / Linux）
+
+**结论：短期不做。** 三个理由，都挺硬：
+
+**1. 代码量的 80% 是 Win32 界面，只能重写，不能移植。** 现在 5825 行里：
+
+| 部分 | 行数 | 跨平台成本 |
+|---|---|---|
+| 自绘 UI（`app` `commands` `dialogs` `palette` `filetree` `theme`） | ~4700 | **全部用 Cocoa/GTK 重写**，没有捷径 |
+| 编辑器封装（`editor`） | 665 | 逻辑可留（`SCI_*` 消息本身跨平台），窗口部分重写 |
+| 编译运行（`runner`） | 353 | `CreateProcess`/Job Object/管道 → `fork`/`exec`/`rlimit`/`poll` |
+| 工作区与工具（`workspace` `util`） | 760 | 基本可复用，路径与文件 API 要改 |
+
+好消息是 [Scintilla](https://www.scintilla.org/) 本身有 Cocoa 和 GTK 后端，编辑器内核不用管；
+坏消息是**所有界面（无边框标题栏、工具栏、侧栏树、补全面板、命令面板、对话框）都是我用 GDI/GDI+ 一笔一笔画的**，换个平台等于从零再画一遍。
+
+**2. 目标人群重合度低。** 国内 OI / ACM 的机房、赛场、洛谷用户绝大多数是 Windows；Mac 用户的日常工作流通常是 VS Code / CLion / 终端 + g++，缺的并不是一个 IDE。
+
+**3. 我没有 Mac，写完了也验证不了。** 这条是真正的阻塞项——macOS 上的构建需要 macOS SDK 和 Xcode 工具链，没法交叉编译；我也没法运行、没法截图、没法回归测试。
+**发布一个我一次都没跑过的 Mac 版本，比不发布更不负责任。**
+
+### 如果你真的想在 Mac 上用
+
+按性价比排序：
+
+1. **VS Code + C/C++ 插件**：编译运行本来就够用，缺的只是"题目管理"和"约定式用例"这层
+2. **终端里直接用 g++**：`for f in *.in; do ./a.out < $f; done` 这种脚本，竞赛选手写起来不费劲
+3. **想要一样的体验**：欢迎有 Mac 的开发者基于这个项目移植。可以开 issue 说一声，我先把
+   `workspace` / `util` / `runner` 三块（平台无关的部分）抽成独立核心，你只需要实现 UI 层
 
 ---
 
