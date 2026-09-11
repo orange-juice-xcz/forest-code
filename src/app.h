@@ -164,7 +164,9 @@ public:
     std::wstring TargetDir() const;             // 新建目标目录
     RECT FsRowRect(int row) const;
     int  FsRowAt(POINT p) const;
-    void CmdNewProblemHere();                   // ＋：一键新建题目
+    void NewProblemIn(const std::wstring &dir);  // 核心：在指定目录新建一套题目
+    void CmdNewProblemHere();                   // 就地新建（选中文件夹 / 其父目录）
+    void CmdNewProblemRoot();                   // ＋：固定建在工作区根目录
     void CmdNewFileHere(bool folder);
     void CmdDeletePath(const std::wstring &path);
     void BeginInlineRename(int row);

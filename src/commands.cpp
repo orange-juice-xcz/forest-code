@@ -1041,7 +1041,7 @@ void App::OnLButtonUp(POINT p) {
             case 6: CmdSettings(); break;
             case 7: CmdAbout(); break;
             case 8: CmdRunAllTests(); break;
-            case 20: CmdNewProblem(); break;
+            case 20: CmdNewProblemRoot(); break;
             case 21: RebuildFileTree(); SetStatus(L"已刷新"); break;
             }
         }

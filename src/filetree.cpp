@@ -105,8 +105,8 @@ std::wstring App::TargetDir() const {
 // ======================================================================
 //  ＋ 一键新建题目
 // ======================================================================
-void App::CmdNewProblemHere() {
-    std::wstring dir = TargetDir();
+// 核心：在 dir 里建一套「题目NN/（题面 + 代码）」
+void App::NewProblemIn(const std::wstring &dir) {
     if (dir.empty() || !IsDir(dir)) { SetStatus(L"工作区不可用"); return; }
 
     // 找最小空号：题目01、题目02 …
@@ -138,6 +138,13 @@ void App::CmdNewProblemHere() {
     OpenFile(cpp);
     SetStatus(L"已新建 " + base + L"（题面 + 代码）");
 }
+
+// 就地新建：跟着当前选中项走（右键「在此新建」和工具栏「新建题目」用这个）
+void App::CmdNewProblemHere() { NewProblemIn(TargetDir()); }
+
+// 侧栏 ＋：不管此刻选中什么，一律建在工作区根目录。
+// 「选中」只代表你正在看它，不代表你要在这里新建——顺手点过的文件夹不该决定新题目去哪。
+void App::CmdNewProblemRoot() { NewProblemIn(ws.settings.workspace); }
 
 // 在当前目录里新建一个空 .cpp（“新建解法”走这里）
 void App::CmdNewSolution() {
@@ -317,7 +324,7 @@ void App::ShowFsMenu(int row) {
     if (row >= 0 && row < (int)fsRows.size()) {
         const FsRow &r = fsRows[row];
         if (r.isDir) {
-            item(3101, L"新建题目（题面 + 代码）");
+            item(3101, L"在此新建题目（题面 + 代码）");
             item(3102, L"新建文件");
             item(3103, L"新建文件夹");
             sep();
